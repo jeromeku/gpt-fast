@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 import torch
 import torch._dynamo.config
 import torch._inductor.config
+from torch.utils.flop_counter import FlopCounterMode
 
 def device_sync(device):
     if "cuda" in device:
@@ -62,7 +63,10 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
-    logits = model(x, input_pos)
+    with FlopCounterMode() as m:
+        logits = model(x, input_pos)
+    with open(f"flops-{input_pos.item()}.txt", "w") as f:
+        print(m.get_table(m.depth), file=f)
     return sample(logits, **sampling_kwargs)
 
 def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
