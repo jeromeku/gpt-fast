@@ -15,7 +15,44 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
     return num_params
 
 
+def FLOP_per_token_precise(n_layers, hidden_dim, kv_seq_len, intermediate_dim, vocab_size, mode: FLOPMode = FLOPMode.FORWARD):
+    """
+    
+    FLOP_per_token precise per https://arxiv.org/abs/2205.05198
+    
+    Need to scale by batch_size * q_seq_len to get to FLOP_per_batch
+    """
+    # Attention: qkv projection + attention scores + attention over value + out projection
+    # FFN: down_proj(gate_proj * up_proj)
+    # Logits: MLP
+    
+    #Attention
+    qkv_proj_flops = 2 * n_layers * hidden_dim * hidden_dim
+    attention_score_flops = 2 * n_layers * kv_seq_len * hidden_dim
+    attention_over_value_flops = attention_score_flops
+    out_proj_flops = 2 * n_layers * hidden_dim * hidden_dim
+    
+    attention_flops = qkv_proj_flops + attention_score_flops + attention_over_value_flops + out_proj_flops
+    
+    #FFN
+    up_proj_flops = 2 * n_layers * hidden_dim * intermediate_dim
+    gate_proj_flops = up_proj_flops
+    down_proj_flops = up_proj_flops
+    
+    ffn_flops = gate_proj_flops + up_proj_flops + down_proj_flops
+    
+    #Logits
+    logits_flops = 2 * hidden_dim * vocab_size
 
+    total_flops = attention_flops + ffn_flops + logits_flops
+    
+    # Same logic as FLOP_per_token
+    if mode == FLOPMode.FORWARD_BACKWARD:
+        total_flops *= 3
+    elif mode == FLOPMode.ACTIVATION_CHECKPOINT:
+        total_flops *= 4
+    
+    return total_flops
 
 def FLOP_per_token(
     num_params: int, 
