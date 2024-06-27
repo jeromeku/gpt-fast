@@ -13,7 +13,8 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 from torch.utils.flop_counter import FlopCounterMode
-
+import profiling_utils
+NUM_PARAMS = None
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
@@ -57,16 +58,35 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    logits = model(x, input_pos)
+    with FlopCounterMode() as m:
+        logits = model(x, input_pos)
+    num_tokens = len(input_pos.reshape(-1))
+    assert num_tokens == input_pos.shape[-1]
+    assert NUM_PARAMS is not None
+    
+    flops_per_token = profiling_utils.FLOP_per_token(num_params=NUM_PARAMS, n_layers=model.config.n_layer, hidden_dim=model.config.dim, kv_seq_len=input_pos.shape[-1])
+    flops_total = flops_per_token * num_tokens
+    with open(f"flops-prefill-{str(input_pos.shape)}.txt", "w") as f:
+        print(m.get_table(m.depth), file=f)
+    print(f"FLOPS prefill: {round(flops_total / 1e9, 1)}GFLOP")
+    
     return sample(logits, **sampling_kwargs)[0]
 
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
+    
     with FlopCounterMode() as m:
         logits = model(x, input_pos)
     with open(f"flops-{input_pos.item()}.txt", "w") as f:
         print(m.get_table(m.depth), file=f)
+    kv_seq_len = input_pos[-1].item()
+    num_tokens = len(input_pos.reshape(-1))
+    assert num_tokens == 1
+    assert NUM_PARAMS is not None
+    flops_per_token = profiling_utils.FLOP_per_token(num_params=NUM_PARAMS, n_layers=model.config.n_layer, hidden_dim=model.config.dim, kv_seq_len=kv_seq_len)
+    print(f"FLOPS decode - {num_tokens} at {kv_seq_len}: {round(flops_per_token * num_tokens / 1e9, 2)}GFLOP")
+    
     return sample(logits, **sampling_kwargs)
 
 def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
@@ -316,6 +336,8 @@ def main(
 
     torch.manual_seed(1234)
     model_size = _get_model_size(model)
+    global NUM_PARAMS
+    NUM_PARAMS = profiling_utils.total_model_params(model)
     if compile:
         if is_speculative and use_tp: # and ("cuda" in device):
             torch._inductor.config.triton.cudagraph_trees = False # Bug with cudagraph trees in this case
