@@ -15,7 +15,7 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
     return num_params
 
 
-def FLOP_per_token_precise(n_layers, hidden_dim, kv_seq_len, intermediate_dim, vocab_size, mode: FLOPMode = FLOPMode.FORWARD):
+def FLOP_per_token_precise(*, n_layers, hidden_dim, kv_seq_len, intermediate_dim, vocab_size, mode: FLOPMode = FLOPMode.FORWARD, ffn_calc_type=None):
     """
     
     FLOP_per_token precise per https://arxiv.org/abs/2205.05198
@@ -27,7 +27,7 @@ def FLOP_per_token_precise(n_layers, hidden_dim, kv_seq_len, intermediate_dim, v
     # Logits: MLP
     
     #Attention
-    qkv_proj_flops = 2 * n_layers * hidden_dim * hidden_dim
+    qkv_proj_flops = 3 * (2 * n_layers * hidden_dim * hidden_dim)
     attention_score_flops = 2 * n_layers * kv_seq_len * hidden_dim
     attention_over_value_flops = attention_score_flops
     out_proj_flops = 2 * n_layers * hidden_dim * hidden_dim
@@ -35,11 +35,13 @@ def FLOP_per_token_precise(n_layers, hidden_dim, kv_seq_len, intermediate_dim, v
     attention_flops = qkv_proj_flops + attention_score_flops + attention_over_value_flops + out_proj_flops
     
     #FFN
-    up_proj_flops = 2 * n_layers * hidden_dim * intermediate_dim
-    gate_proj_flops = up_proj_flops
-    down_proj_flops = up_proj_flops
-    
-    ffn_flops = gate_proj_flops + up_proj_flops + down_proj_flops
+    if ffn_calc_type is None:
+        up_proj_flops = 2 * n_layers * hidden_dim * intermediate_dim
+        gate_proj_flops = up_proj_flops
+        down_proj_flops = up_proj_flops
+        ffn_flops = gate_proj_flops + up_proj_flops + down_proj_flops
+    else:
+        ffn_flops = 2 * 2 * n_layers * hidden_dim * 4 * hidden_dim
     
     #Logits
     logits_flops = 2 * hidden_dim * vocab_size
@@ -54,7 +56,7 @@ def FLOP_per_token_precise(n_layers, hidden_dim, kv_seq_len, intermediate_dim, v
     
     return total_flops
 
-def FLOP_per_token(
+def FLOP_per_token(*, 
     num_params: int, 
     n_layers: int, 
     kv_seq_len: int, 
@@ -106,16 +108,7 @@ def FLOP_per_token(
     
     return flop_per_token_per_pass
 
-def test_flop_per_token(n_layers=32, kv_seq_len=2048, n_heads=None, dim_per_head=None, hidden_dim=4096, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs):
-    flop_per_token = FLOP_per_token(num_params, n_layers, kv_seq_len, n_heads, dim_per_head, hidden_dim, mode=mode)
-    flop_check = (6 * num_params + 12 * n_layers * kv_seq_len * hidden_dim) / 3
-    
-    if mode == FLOPMode.FORWARD_BACKWARD:
-        flop_check *= 3
-    elif mode == FLOPMode.ACTIVATION_CHECKPOINT:
-        flop_check *= 4
-        
-    assert flop_per_token == flop_check, f"({flop_per_token / 1e9} per token) != ({flop_check / 1e9} check)"
+
 
 LLAMA2_CONFIG = {
   "hidden_dim": 4096,
@@ -126,6 +119,34 @@ LLAMA2_CONFIG = {
   "vocab_size": 32000
 }
 
+def test_flop_per_token(*, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs):
+    flop_per_token = FLOP_per_token(num_params=num_params, 
+                                    n_layers=n_layers, 
+                                    kv_seq_len=kv_seq_len, 
+                                    hidden_dim=hidden_dim, 
+                                    mode=mode)
+    flop_check = (6 * num_params + 12 * n_layers * kv_seq_len * hidden_dim) / 3
+    
+    if mode == FLOPMode.FORWARD_BACKWARD:
+        flop_check *= 3
+    elif mode == FLOPMode.ACTIVATION_CHECKPOINT:
+        flop_check *= 4
+        
+    assert flop_per_token == flop_check, f"({flop_per_token / 1e9} per token) != ({flop_check / 1e9} check)"
+
+def test_flop_precise(*, n_layers, kv_seq_len, hidden_dim, intermediate_dim, vocab_size, mode=FLOPMode.FORWARD, **kwargs):
+    flop_precise = FLOP_per_token_precise(n_layers=n_layers, 
+                                          hidden_dim=hidden_dim, 
+                                          kv_seq_len=kv_seq_len, 
+                                          intermediate_dim=intermediate_dim, 
+                                          vocab_size=vocab_size, 
+                                          mode=mode, ffn_calc_type="gpt3")
+    flop_check = 24 * n_layers * hidden_dim * hidden_dim + 4 * n_layers * kv_seq_len * hidden_dim + 2 * hidden_dim * vocab_size
+    flop_rough = FLOP_per_token(num_params=7e9, n_layers=n_layers, kv_seq_len=kv_seq_len, hidden_dim=hidden_dim, mode=mode)
+    assert round(flop_precise / 1e9, 1) == round(flop_check / 1e9, 1), f"({flop_precise / 1e9} per token) != ({flop_check / 1e9} check) ({flop_rough / 1e9} rough)"
+    
 if __name__ == "__main__":
-    for m in FLOPMode:
-        test_flop_per_token(**LLAMA2_CONFIG, mode=m.value)
+    test_flop_precise(**LLAMA2_CONFIG)
+    # for m in FLOPMode:
+    #     test_flop_per_token(**LLAMA2_CONFIG, mode=m.value)
+    
