@@ -94,7 +94,6 @@ def FLOP_per_token(
     attention_flop_per_token = 2 * 2 * n_layers * kv_seq_len * hidden_dim
    
     flop_per_token_per_pass = num_params_flop_per_token + attention_flop_per_token  
-    _flop_per_token_per_pass_check = (6 * num_params + 12 * n_layers * kv_seq_len * hidden_dim) / 3
 
     # Backwards is 2 passes (need to account for activation and weight gradient FLOP)
     # 3 = 1 (forward) + 2 (backward)
@@ -106,3 +105,27 @@ def FLOP_per_token(
         flop_per_token_per_pass *= 4
     
     return flop_per_token_per_pass
+
+def test_flop_per_token(n_layers=32, kv_seq_len=2048, n_heads=None, dim_per_head=None, hidden_dim=4096, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs):
+    flop_per_token = FLOP_per_token(num_params, n_layers, kv_seq_len, n_heads, dim_per_head, hidden_dim, mode=mode)
+    flop_check = (6 * num_params + 12 * n_layers * kv_seq_len * hidden_dim) / 3
+    
+    if mode == FLOPMode.FORWARD_BACKWARD:
+        flop_check *= 3
+    elif mode == FLOPMode.ACTIVATION_CHECKPOINT:
+        flop_check *= 4
+        
+    assert flop_per_token == flop_check, f"({flop_per_token / 1e9} per token) != ({flop_check / 1e9} check)"
+
+LLAMA2_CONFIG = {
+  "hidden_dim": 4096,
+  "intermediate_dim": 11008,
+  "kv_seq_len": 4096,
+  "num_attention_heads": 32,
+  "n_layers": 32,
+  "vocab_size": 32000
+}
+
+if __name__ == "__main__":
+    for m in FLOPMode:
+        test_flop_per_token(**LLAMA2_CONFIG, mode=m.value)
