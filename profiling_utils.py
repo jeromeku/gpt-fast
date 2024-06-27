@@ -18,9 +18,15 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
 def FLOP_per_token_precise(*, n_layers, hidden_dim, kv_seq_len, intermediate_dim, vocab_size, mode: FLOPMode = FLOPMode.FORWARD, ffn_calc_type=None):
     """
     
-    FLOP_per_token precise per https://arxiv.org/abs/2205.05198
+    FLOP_per_token calculation per https://arxiv.org/abs/2205.05198
     
-    Need to scale by batch_size * q_seq_len to get to FLOP_per_batch
+    Need to scale by batch_size * q_seq_len to get to FLOP_per_batch, then divide by seconds per batch to get to FLOPs
+    MFU = FLOPs / GPU_FLOPs
+    
+    Alternatively,
+        token_per_second = batch_size * q_seq_len / seconds_per_batch
+        theoretical_peak_throughput = theoretical_peak_matmul_throughput / model_flops
+        MFU = tokens_per_second / theoretical_peak_throughput
     """
     # Attention: qkv projection + attention scores + attention over value + out projection
     # FFN: down_proj(gate_proj * up_proj)
@@ -71,12 +77,25 @@ def FLOP_per_token(*,
     Calculates FLOP per token based on PaLM MFU formula
     https://arxiv.org/abs/2204.02311
     
+    Need to scale by `batch_size * q_seq_len` to get to FLOP_per_batch, then divide by seconds per iteration (or batch) to get to FLOPs
+    ```
+        num_tokens = batch_size * q_seq_len
+        MFU = (num_tokens * FLOP_per_token) / GPU_FLOPs
+    ```
+    
+    Alternatively,
+    ```
+        num_tokens_per_batch = batch_size * q_seq_len
+        token_per_second = num_tokens_per_batch / seconds_per_batch
+        theoretical_peak_throughput = GPU_FLOPs / model_flops
+        MFU = tokens_per_second / theoretical_peak_throughput
+    ``` 
+    where `GPU_FLOPs` is the theoretical peak GPU (tensor-core) FLOPs for the chip
+
     Notes: 
-    - To scale to batch, need to multiply by `num_tokens_per_batch`, where
-    `num_tokens_per_batch = batch_size * q_seq_len`
-    - We separate seq_len into q_seq_len and kv_seq_len, since these differ depending on the mode
+    - I separated seq_len into q_seq_len and kv_seq_len, since these differ depending on the regime:
         - During training, these are equal
-        - During inference we have 2-phases (excluding speculative decoding and other parallel decoding schemes):
+        - During inference we have 2 phases (disregarding speculative decoding and other parallel decoding schemes for now):
             - pre-fill: q_seq_len and kv_seq_len are equal
             - decode: q_seq_len = 1 and kv_seq_len = context length 
     - Further refinements
@@ -110,7 +129,7 @@ def FLOP_per_token(*,
 
 
 
-LLAMA2_CONFIG = {
+_LLAMA2_CONFIG = {
   "hidden_dim": 4096,
   "intermediate_dim": 11008,
   "kv_seq_len": 4096,
@@ -119,7 +138,7 @@ LLAMA2_CONFIG = {
   "vocab_size": 32000
 }
 
-def test_flop_per_token(*, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs):
+def _test_flop_per_token(*, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs):
     flop_per_token = FLOP_per_token(num_params=num_params, 
                                     n_layers=n_layers, 
                                     kv_seq_len=kv_seq_len, 
@@ -134,7 +153,7 @@ def test_flop_per_token(*, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mod
         
     assert flop_per_token == flop_check, f"({flop_per_token / 1e9} per token) != ({flop_check / 1e9} check)"
 
-def test_flop_precise(*, n_layers, kv_seq_len, hidden_dim, intermediate_dim, vocab_size, mode=FLOPMode.FORWARD, **kwargs):
+def _test_flop_precise(*, n_layers, kv_seq_len, hidden_dim, intermediate_dim, vocab_size, mode=FLOPMode.FORWARD, **kwargs):
     flop_precise = FLOP_per_token_precise(n_layers=n_layers, 
                                           hidden_dim=hidden_dim, 
                                           kv_seq_len=kv_seq_len, 
@@ -146,7 +165,7 @@ def test_flop_precise(*, n_layers, kv_seq_len, hidden_dim, intermediate_dim, voc
     assert round(flop_precise / 1e9, 1) == round(flop_check / 1e9, 1), f"({flop_precise / 1e9} per token) != ({flop_check / 1e9} check) ({flop_rough / 1e9} rough)"
     
 if __name__ == "__main__":
-    test_flop_precise(**LLAMA2_CONFIG)
-    # for m in FLOPMode:
-    #     test_flop_per_token(**LLAMA2_CONFIG, mode=m.value)
+    for m in FLOPMode:
+        _test_flop_per_token(**_LLAMA2_CONFIG, mode=m.value)
+        _test_flop_precise(**_LLAMA2_CONFIG, mode=m.value)
     
