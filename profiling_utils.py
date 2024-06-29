@@ -22,7 +22,7 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
 
 
 @dataclass
-class GPU:
+class CUDADevice:
     """
     GPU specs for theoretical peak performance
 
@@ -103,8 +103,11 @@ class GPU:
         # Issue post check warnings
         self._post_init_check()
 
-        def __repr__(self):
-            return f"GPU(name={self.name}, dtype={self.dtype}, flops={round(self.flops / 1e12, 2)}TFLOPs, bandwidth={round(self.bandwidth / 8, 2)}GB/s, vram={round(self.vram / 1e9, 1)}GB)"
+    def __str__(self):
+        bw_bytes_per_s = round(self.bandwidth / 8, 1)
+        tflops = round(self.flops / 1e12, 2)
+        vram_GB = round(self.vram / 1e9, 1)
+        return f"GPU(name={self.name}, dtype={self.dtype}, bandwidth={bw_bytes_per_s}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
     def roofline_breakeven_point(self, dtype=torch.float16, tensorcore=True):
         """ "
@@ -164,12 +167,12 @@ class SOL_Latency:
     name: str
     memory: float
     compute: float
-    gpu: GPU
+    device: CUDADevice
     model_config: dict
 
 
 def SOL_latency(
-    gpu: GPU,
+    gpu: CUDADevice,
     model: torch.nn.Module,
     q_seq_len,
     kv_seq_len: int,
