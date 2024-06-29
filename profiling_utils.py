@@ -31,6 +31,7 @@ class TransformerConfig:
     """
 
     name: str
+    num_params: int
     num_hidden_layers: int
     hidden_size: int
     intermediate_size: int
@@ -38,6 +39,7 @@ class TransformerConfig:
     num_key_value_heads: int
     model_dtype: torch.dtype
     kv_cache_dtype: Optional[torch.dtype]
+    num_active_params: Optional[int] = None
 
 
 @dataclass
@@ -63,11 +65,36 @@ class SOLStats:
 #     Speed of light latency numbers
 #     """
 
+
 #     name: str
 #     memory: float
 #     compute: float
 #     device: CUDADevice
 #     model_config: dict
+def roofline_breakeven_point(device: DeviceSpec):
+    """ "
+    Arithmetic intensity (FLOP / byte) transition point from
+    memory-bound to compute-bound
+    """
+    return device.flops / device.bandwidth
+
+
+def memory_latency(device: DeviceSpec, model_config: TransformerConfig) -> float:
+    """
+    Memory latency: theoretical peak memory access latency
+    in seconds for a given number of bytes
+    """
+    num_bytes = model_config.num_params * model_config.model_dtype.itemsize
+    # device bandwidth is in GB/s
+    bps = device.bandwidth * 1e9
+    return num_bytes / bps
+
+
+def compute_latency(device: DeviceSpec, FLOPS: int) -> float:
+    """
+    Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
+    """
+    return FLOPS / device.flops
 
 
 def model_latency(

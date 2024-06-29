@@ -324,10 +324,10 @@ class DeviceSpec:
             print("GPU vram is None - please specify the vram in bytes")
 
     def __str__(self):
-        bw = round(self.bandwidth, 1)
-        tflops = round(self.flops / 1e12, 2)
+        bw = round(self.bandwidth, 4)
+        tflops = round(self.flops / 1e12, 4)
         vram_GB = round(self.vram / 1e9, 1)
-        return f"DeviceSpec(name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
+        return f"DeviceSpec(device_type={self.device_type}, name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
 
 @dataclass
@@ -364,16 +364,14 @@ class CUDADeviceSpec(DeviceSpec):
                 flops_by_dtype = get_flops_by_dtype(chip_name)
                 # Populate flops if not already populated
                 if self.dtype in flops_by_dtype:
-                    if self.dtype == torch.float32:
-                        should_use_tf32 = (
-                            self.dtype == torch.float32
-                            and "tfloat32" in flops_by_dtype
-                            and torch.get_float32_matmul_precision() != "highest"
-                            and self.use_tensorcores
-                        )
-                        if should_use_tf32:
-                            self.dtype = "tfloat32"
                     self.flops = flops_by_dtype[self.dtype]
+
+                    if self.dtype == torch.float32:
+                        use_tf32 = "tfloat32" in flops_by_dtype and self.use_tensorcores
+
+                        if use_tf32:
+                            self.flops = flops_by_dtype["tfloat32"]
+
                 else:
                     print(
                         f"Could not find FLOPs for dtype {self.dtype} for device {self.name}"
@@ -384,26 +382,3 @@ class CUDADeviceSpec(DeviceSpec):
 
         # Issue post check warnings
         self._post_init_check()
-
-
-def roofline_breakeven_point(device: DeviceSpec):
-    """ "
-    Arithmetic intensity (FLOP / byte) transition point from
-    memory-bound to compute-bound
-    """
-    return device.flops / device.bandwidth
-
-
-def memory_latency(device: DeviceSpec, num_bytes: int) -> float:
-    """
-    Memory latency: theoretical peak memory access latency
-    in seconds for a given number of bytes
-    """
-    return num_bytes / device.bandwidth
-
-
-def compute_latency(device: DeviceSpec, FLOPS: int) -> float:
-    """
-    Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
-    """
-    return FLOPS / device.flops
