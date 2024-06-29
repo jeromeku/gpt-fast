@@ -94,7 +94,7 @@ def model_latency(
     memory_latency = model_size / device_spec.bandwidth
 
     # flops = floating point operations NOT floating point operations per second
-    model_flops_per_token = FLOP_per_token(
+    model_flops_per_token = flops_per_token(
         num_params=num_active_params,
         num_layers=transformer_config.num_hidden_layers,
         kv_seq_len=kv_seq_len,
@@ -145,7 +145,7 @@ def kvcache(
     return batch_size * num_layers * seq_len * kvdim * 2
 
 
-def FLOP_per_token_precise(
+def _flops_per_token_precise(
     *,
     n_layers,
     hidden_dim,
@@ -157,7 +157,7 @@ def FLOP_per_token_precise(
 ):
     """
 
-    FLOP_per_token calculation per https://arxiv.org/abs/2205.05198
+    flops_per_token calculation per https://arxiv.org/abs/2205.05198
 
     Need to scale by batch_size * q_seq_len to get to FLOP_per_batch, then divide by seconds per batch to get to FLOPs
     MFU = FLOPs / GPU_FLOPs
@@ -198,7 +198,7 @@ def FLOP_per_token_precise(
 
     total_flops = attention_flops + ffn_flops + logits_flops
 
-    # Same logic as FLOP_per_token
+    # Same logic as flops_per_token
     if mode == FLOPMode.FORWARD_BACKWARD:
         total_flops *= 3
     elif mode == FLOPMode.ACTIVATION_CHECKPOINT:
@@ -207,7 +207,7 @@ def FLOP_per_token_precise(
     return total_flops
 
 
-def FLOP_per_token(
+def flops_per_token(
     *,
     num_active_params: int,
     num_hidden_layers: int,
@@ -226,7 +226,7 @@ def FLOP_per_token(
     Need to scale by `batch_size * q_seq_len` to get to FLOP_per_batch, then divide by seconds per iteration (or batch) to get to FLOPs
     ```
         num_tokens = batch_size * q_seq_len
-        MFU = (num_tokens * FLOP_per_token) / GPU_FLOPs
+        MFU = (num_tokens * flops_per_token) / GPU_FLOPs
     ```
 
     Alternatively,
@@ -305,12 +305,13 @@ def compute_latency(
     """
     Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
     """
-    flops_per_token = FLOP_per_token(
+    flops_per_token = flops_per_token(
         num_active_params=model_config.num_active_params,
         num_hidden_layers=model_config.num_hidden_layers,
         num_attention_heads=model_config.num_attention_heads,
         context_len=context_len,
         hidden_size=model_config.hidden_size,
+        mode=mode,
     )
     total_flops = flops_per_token * num_tokens
     return total_flops / device.flops
@@ -329,7 +330,7 @@ _LLAMA2_CONFIG = {
 def _test_flop_per_token(
     *, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs
 ):
-    flop_per_token = FLOP_per_token(
+    flop_per_token = flops_per_token(
         num_params=num_params,
         n_layers=n_layers,
         kv_seq_len=kv_seq_len,
@@ -358,7 +359,7 @@ def _test_flop_precise(
     mode=FLOPMode.FORWARD,
     **kwargs,
 ):
-    flop_precise = FLOP_per_token_precise(
+    flop_precise = _flops_per_token_precise(
         n_layers=n_layers,
         hidden_dim=hidden_dim,
         kv_seq_len=kv_seq_len,
@@ -372,7 +373,7 @@ def _test_flop_precise(
         + 4 * n_layers * kv_seq_len * hidden_dim
         + 2 * hidden_dim * vocab_size
     )
-    flop_rough = FLOP_per_token(
+    flop_rough = flops_per_token(
         num_params=7e9,
         n_layers=n_layers,
         kv_seq_len=kv_seq_len,
