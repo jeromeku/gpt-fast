@@ -255,24 +255,34 @@ def get_chip_name(device: int = 0) -> str:
     return chip
 
 
-def get_flops(dtype: torch.dtype, device: int = 0):
-    chip = get_chip_name(device)
-    if chip is None:
-        logger.warning(
-            f"FLOPs data not available for for device {device!r}, please entire it manually"
-        )
-        return None
-    dtype_to_flops = AVAILABLE_GPU_SPECS[chip]
+def get_vram(device: int = 0) -> int:
+    device_props = torch.cuda.get_device_properties(device)
+    return device_props.total_memory
 
-    # Check for tfloat32
-    if (
-        dtype == torch.float32
-        and "tfloat32" in dtype_to_flops
-        and torch.get_float32_matmul_precision() != "highest"
-    ):
-        logger.warning("Using tfloat32 tensorcores FLOPs")
-        dtype = "tfloat32"
-    if dtype not in dtype_to_flops:
-        logger.warning(f"FLOPs not found for {dtype!r} on {chip!r}")
-        return None
-    return dtype_to_flops[dtype]
+
+def get_bandwidth(device: int = 0) -> int:
+    try:
+        from triton.testing import get_dram_gbps
+
+        bandwidth = get_dram_gbps(device)
+    except ImportError:
+        print("Could not import triton to get DRAM Gbps. Please install triton")
+        bandwidth = None
+    return bandwidth
+
+
+def get_flops_by_dtype(chip_name: str) -> dict[torch.dtype, float]:
+    return AVAILABLE_GPU_SPECS.get(chip_name, None)
+
+    # # Check for tfloat32
+    # if (
+    #     dtype == torch.float32
+    #     and "tfloat32" in dtype_to_flops
+    #     and torch.get_float32_matmul_precision() != "highest"
+    # ):
+    #     logger.warning("Using tfloat32 tensorcores FLOPs")
+    #     dtype = "tfloat32"
+    # if dtype not in dtype_to_flops:
+    #     logger.warning(f"FLOPs not found for {dtype!r} on {chip!r}")
+    #     return None
+    # return dtype_to_flops[dtype]

@@ -4,7 +4,7 @@ from typing import Optional
 
 import torch
 
-from gpu_specs import AVAILABLE_GPU_SPECS, get_chip_name
+from gpu_specs import get_bandwidth, get_chip_name, get_flops_by_dtype, get_vram
 
 
 class FLOPMode(Enum):
@@ -28,6 +28,13 @@ class GPU:
 
     Fields will be auto-populated in __post_init__ if not already specified
     and if data is available
+    - name: inferred from device
+    - bandwidth (Gb/s): inferred from device
+    - flops (FLOP / s): inferred from dtype if not specified
+    - dtype (torch.dtype): dtype for theoretical peak performance
+    - use_tensorcores (bool): if true, use tfloat32 tensorcores for dtype == torch.float32,
+    true for other dtypes
+    - vram (bytes): inferred from device props
     See AVAILABLE_GPU_SPECS for a list of available chips
     """
 
@@ -35,56 +42,69 @@ class GPU:
     device: Optional[int] = 0
     # Chip name, inferred from device
     name: Optional[str] = None
-    # Bandwidth in Gb/s; Note this this is converted in GB/s in __post_init__
+    # Bandwidth in Gb/s
     bandwidth: Optional[int] = None
-    # Theoretical peak FLOPs in FLOP/s
+    # Theoretical peak FLOPs in FLOP/s, if not specified will be set based on dtype
+    flops: Optional[int] = None
     dtype: torch.dtype = torch.float32
     # Use tfloat32 FLOPs for dtype == torch.float32
     use_tensorcores: bool = True
-    flops: Optional[int] = None
     vram: Optional[int] = None
 
-    def _chip_available(self):
-        return get_chip_name(self.device) is not None
+    def _post_init_check(self):
+        if self.bandwidth is None:
+            print(
+                "GPU bandwidth is None - please specify the bandwidth in Gb/s in order to enable SOL calculations"
+            )
+
+        if self.flops is None:
+            print(
+                "GPU flops is None - please specify the flops in FLOP/s in order to enable SOL calculations"
+            )
+
+        if self.vram is None:
+            print("GPU vram is None - please specify the vram in bytes")
 
     def __post_init__(self):
-        # Convert from Gb/s to GB/s
-        if self.bandwidth is not None:
-            self.bandwidth = self.bandwidth / 8
-        else:
-            try:
-                from triton.testing import get_dram_gbps
+        # Populate fields if not already populated
+        self.name = torch.cuda.get_device_name(self.device)
 
-                self.bandwidth = get_dram_gbps(self.name) / 8
-            except ImportError:
-                print(
-                    "Could not import triton to get DRAM Gbps. Please manually specify the bandwidth in Gb/s or install triton"
-                )
-        self.name = chip_name = get_chip_name(self.device)
-        if chip_name is None and self.flops is None:
-            print(
-                f"No FLOPs data available for device {self.device!r}.  Please manually specify the FLOPs in FLOP/s"
-            )
-            return
+        # Memory bandwidth
+        if self.bandwidth is None:
+            self.bandwidth = get_bandwidth()
 
-        flops_by_dtype = AVAILABLE_GPU_SPECS[chip_name]
-        # Populate flops if not already populated
+        # FLOPs
         if self.flops is None:
-            if self.dtype in flops_by_dtype:
-                if self.dtype == torch.float32:
-                    should_use_tf32 = (
-                        self.dtype == torch.float32
-                        and "tfloat32" in flops_by_dtype
-                        and torch.get_float32_matmul_precision() != "highest"
-                        and self.use_tensorcores
-                    )
-                    if should_use_tf32:
-                        self.dtype = "tfloat32"
-                self.flops = flops_by_dtype[self.dtype]
+            chip_name = get_chip_name(self.device)
+            if chip_name is None:
+                print(f"No FLOPs data available for device name {self.name}")
             else:
-                print(
-                    "Could not find FLOPs for dtype, please manually specify the FLOPs in FLOP/s"
-                )
+                flops_by_dtype = get_flops_by_dtype(chip_name)
+                # Populate flops if not already populated
+                if self.dtype in flops_by_dtype:
+                    if self.dtype == torch.float32:
+                        should_use_tf32 = (
+                            self.dtype == torch.float32
+                            and "tfloat32" in flops_by_dtype
+                            and torch.get_float32_matmul_precision() != "highest"
+                            and self.use_tensorcores
+                        )
+                        if should_use_tf32:
+                            self.dtype = "tfloat32"
+                    self.flops = flops_by_dtype[self.dtype]
+                else:
+                    print(
+                        f"Could not find FLOPs for dtype {self.dtype} for device {self.name}"
+                    )
+
+        # Vram
+        if self.vram is None:
+            self.vram = get_vram()
+        # Issue post check warnings
+        self._post_init_check()
+
+        def __repr__(self):
+            return f"GPU(name={self.name}, dtype={self.dtype}, flops={round(self.flops / 1e12, 2)}TFLOPs, bandwidth={round(self.bandwidth / 8, 2)}GB/s, vram={round(self.vram / 1e9, 1)}GB)"
 
     def roofline_breakeven_point(self, dtype=torch.float16, tensorcore=True):
         """ "
