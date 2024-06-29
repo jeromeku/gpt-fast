@@ -6,7 +6,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 # Copied from https://github.com/Lightning-AI/pytorch-lightning/blob/master/src/lightning/fabric/utilities/throughput.py
-_GPU_FLOPS: Dict[str, Dict[Union[str, torch.dtype], float]] = {
+AVAILABLE_GPU_SPECS: Dict[str, Dict[Union[str, torch.dtype], float]] = {
     # Hopper
     # source: https://resources.nvidia.com/en-us-tensor-core
     "h100 nvl": {
@@ -209,7 +209,7 @@ _GPU_FLOPS: Dict[str, Dict[Union[str, torch.dtype], float]] = {
 
 
 # Adapted from https://github.com/Lightning-AI/pytorch-lightning/blob/master/src/lightning/fabric/utilities/throughput.py
-def get_gpu_name(device: int = 0) -> str:
+def get_chip_name(device: int = 0) -> str:
     device_name = torch.cuda.get_device_name(device)
     chip = device_name.lower()
 
@@ -257,13 +257,13 @@ def get_gpu_name(device: int = 0) -> str:
 
 
 def get_flops(dtype: torch.dtype, device: int = 0):
-    chip = get_gpu_name(device)
+    chip = get_chip_name(device)
     if chip is None:
         logger.warning(
             f"FLOPs data not available for for device {device!r}, please entire it manually"
         )
         return None
-    dtype_to_flops = _GPU_FLOPS[chip]
+    dtype_to_flops = AVAILABLE_GPU_SPECS[chip]
 
     # Check for tfloat32
     if (
