@@ -251,7 +251,6 @@ def get_chip_name(device: int = 0) -> str:
     elif "v100s-pcie" in chip:
         chip = "v100s pcie"
     else:
-        logger.warning(f"FLOPs not found for {device_name!r}")
         chip = None
     return chip
 
