@@ -4,7 +4,10 @@ from typing import Optional
 
 import torch
 
-from gpu_specs import get_bandwidth, get_chip_name, get_flops_by_dtype, get_vram
+from device_specs import (
+    CUDADeviceSpec,
+    DeviceSpec,
+)
 
 
 class FLOPMode(Enum):
@@ -21,135 +24,8 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
     return num_params
 
 
-@dataclass
-class DeviceSpec:
-    """
-    Abstract device specs for theoretical peak performance calculations.
-
-    Fields will be auto-populated in __post_init__ if not already specified
-    and if data is available
-    - bandwidth (GB/s)
-    - flops (FLOP / s)
-    - vram (bytes)
-    - dtype (torch.dtype) dtype used for theoretical peak performance
-    """
-
-    name: Optional[str] = None
-    bandwidth: Optional[int] = None
-    flops: Optional[int] = None
-    vram: Optional[int] = None
-    dtype: Optional[torch.dtype] = torch.float32
-
-    def _post_init_check(self):
-        if self.bandwidth is None:
-            print(
-                "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable SOL calculations"
-            )
-
-        if self.flops is None:
-            print(
-                "GPU flops is None - please specify the flops in FLOP/s in order to enable SOL calculations"
-            )
-
-        if self.vram is None:
-            print("GPU vram is None - please specify the vram in bytes")
-
-    def __str__(self):
-        bw = round(self.bandwidth, 1)
-        tflops = round(self.flops / 1e12, 2)
-        vram_GB = round(self.vram / 1e9, 1)
-        return f"DeviceSpec(name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
-
-
-@dataclass
-class CUDADevice(DeviceSpec):
-    """
-    CUDA specs for theoretical peak performance
-
-    Fields will be auto-populated in __post_init__ if not already specified
-    and if data is available
-
-    See AVAILABLE_GPU_SPECS for a list of available chips
-    """
-
-    # Device index
-    device: Optional[int] = 0
-    # Use tfloat32 FLOPs for dtype == torch.float32
-    use_tensorcores: bool = True
-
-    def __post_init__(self):
-        # Populate fields if not already populated
-        self.name = torch.cuda.get_device_name(self.device)
-
-        # Memory bandwidth
-        if self.bandwidth is None:
-            self.bandwidth = get_bandwidth()
-
-        # FLOPs
-        if self.flops is None:
-            chip_name = get_chip_name(self.device)
-            if chip_name is None:
-                print(f"No FLOPs data available for device name {self.name}")
-            else:
-                flops_by_dtype = get_flops_by_dtype(chip_name)
-                # Populate flops if not already populated
-                if self.dtype in flops_by_dtype:
-                    if self.dtype == torch.float32:
-                        should_use_tf32 = (
-                            self.dtype == torch.float32
-                            and "tfloat32" in flops_by_dtype
-                            and torch.get_float32_matmul_precision() != "highest"
-                            and self.use_tensorcores
-                        )
-                        if should_use_tf32:
-                            self.dtype = "tfloat32"
-                    self.flops = flops_by_dtype[self.dtype]
-                else:
-                    print(
-                        f"Could not find FLOPs for dtype {self.dtype} for device {self.name}"
-                    )
-        # Vram
-        if self.vram is None:
-            self.vram = get_vram()
-
-        # Issue post check warnings
-        self._post_init_check()
-
-    def roofline_breakeven_point(self, dtype=torch.float16, tensorcore=True):
-        """ "
-        Arithmetic intensity (FLOP / byte) transition point from
-        memory-bound to compute-bound
-        """
-        if tensorcore:
-            return (
-                self.tensorops_fp32 / self.bandwidth
-                if dtype.itemsize == 4
-                else self.tensorops_fp16 / self.bandwidth
-            )
-        return self.flops / self.bandwidth
-
-    def memory_latency(self, num_bytes: int) -> float:
-        """
-        Memory latency: theoretical peak memory access latency
-        in seconds for a given number of bytes
-        """
-        return num_bytes / self.bandwidth
-
-    def compute_latency(self, FLOPS: int, dtype: torch.dtype, tensorcore=True) -> float:
-        """
-        Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
-        """
-        if tensorcore:
-            return (
-                FLOPS / self.tensorops_fp32
-                if dtype.itemsize == 4
-                else FLOPS / self.tensorops_fp16
-            )
-        return FLOPS / self.flops
-
-
 @dataclass(frozen=True)
-class ModelConfig:
+class TransformerConfig:
     """
     Minimal decoder transformer model config per HuggingFace
     """
@@ -164,78 +40,90 @@ class ModelConfig:
     kv_cache_dtype: Optional[torch.dtype]
 
 
-@dataclass(frozen=True)
-class SOL_Latency:
+@dataclass
+class SOLStats:
     """
-    Speed of light latency numbers
+    Speed of light stats for a given device and model config
+
+    memory: memory latency in seconds
+    compute: compute latency in seconds
+    device: DeviceSpec
+    model_config: TransformerConfig
     """
 
-    name: str
     memory: float
     compute: float
-    device: CUDADevice
-    model_config: dict
+    device: DeviceSpec
+    model_config: TransformerConfig
 
 
-def SOL_latency(
-    gpu: CUDADevice,
-    model: torch.nn.Module,
-    q_seq_len,
-    kv_seq_len: int,
-    batch_size: int,
+# @dataclass(frozen=True)
+# class SOL_Latency:
+#     """
+#     Speed of light latency numbers
+#     """
+
+#     name: str
+#     memory: float
+#     compute: float
+#     device: CUDADevice
+#     model_config: dict
+
+
+def model_latency(
+    num_params: int,
+    transformer_config: TransformerConfig,
     model_dtype: torch.dtype,
-    kv_cache_dtype: torch.dtype,
-    tensorcores=True,
+    num_tokens: int,
+    kv_seq_len: int,
+    num_active_params: Optional[int] = None,
+    device: int = 0,
+    mode: FLOPMode = FLOPMode.FORWARD,
 ):
     # Calculate latencies for the model
-    model_size = int(
-        total_model_params(model, exclude_embedding=False) * model_dtype.itemsize
-    )
-    memory_latency = model_size / gpu.bandwidth
+    if torch.cuda.is_available():
+        device_spec = CUDADeviceSpec(device, dtype=model_dtype)
+    else:
+        print("Only CUDA devices are supported")
+        return None
 
-    active_params = total_model_params(model, exclude_embedding=True)
+    model_size = int(num_params * model_dtype.itemsize)
+    memory_latency = model_size / device_spec.bandwidth
 
     # flops = floating point operations NOT floating point operations per second
     model_flops_per_token = FLOP_per_token(
-        num_params=active_params,
-        n_layers=model.num_hidden_layers,
+        num_params=num_active_params,
+        num_layers=transformer_config.num_hidden_layers,
         kv_seq_len=kv_seq_len,
-        hidden_dim=model.hidden_size,
-        mode=FLOPMode.FORWARD,
+        hidden_size=transformer_config.hidden_size,
+        mode=mode,
     )
-    total_model_flops = batch_size * q_seq_len * model_flops_per_token
+    total_model_flops = num_tokens * model_flops_per_token
 
-    if tensorcores:
-        theoretical_FLOPs = (
-            gpu.tensorops_fp32 if model_dtype.itemsize == 4 else gpu.tensorops_fp16
-        )
-    else:
-        # FLOPS = floating point operations per second
-        theoretical_FLOPs = gpu.flops
+    compute_latency = total_model_flops / device_spec.flops
 
-    compute_latency = total_model_flops / theoretical_FLOPs
-
-    # Calculate latencies for kv cache
-    kv_numel = kvcache(
-        num_layers=model.num_hidden_layers,
-        hidden_size=model.hidden_size,
-        num_attention_heads=model.num_attention_heads,
-        num_key_value_heads=model.num_key_value_heads,
-        seq_len=kv_seq_len,
-        batch_size=batch_size,
+    return SOLStats(
+        memory=memory_latency,
+        compute=compute_latency,
+        device=device_spec,
+        model_config=transformer_config,
     )
+    # # Calculate latencies for kv cache
+    # kv_numel = kvcache(
+    #     num_layers=model.num_hidden_layers,
+    #     hidden_size=model.hidden_size,
+    #     num_attention_heads=model.num_attention_heads,
+    #     num_key_value_heads=model.num_key_value_heads,
+    #     seq_len=kv_seq_len,
+    #     batch_size=batch_size,
+    # )
 
-    kv_bytes = kv_numel * kv_cache_dtype.itemsize
-    kv_ops = (
-        kv_numel * (model.num_attention_heads // model.num_key_value_heads) * 2
-    )  # assume FMA per parameter
-    kv_memory_latency = kv_bytes / gpu.bandwidth
-    kv_compute_latency = kv_ops / gpu.flops
-
-    return {
-        "model": {"io": io_latency, "compute": compute_latency},
-        "kvcache": {"io": kv_io_latency, "compute": kv_compute_latency},
-    }
+    # kv_bytes = kv_numel * kv_cache_dtype.itemsize
+    # kv_ops = (
+    #     kv_numel * (model.num_attention_heads // model.num_key_value_heads) * 2
+    # )  # assume FMA per parameter
+    # kv_memory_latency = kv_bytes / gpu.bandwidth
+    # kv_compute_latency = kv_ops / gpu.flops
 
 
 def kvcache(

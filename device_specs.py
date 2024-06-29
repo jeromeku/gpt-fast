@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, Union
+from dataclasses import dataclass
+from typing import Dict, Optional, Union
 
 import torch
 
@@ -286,3 +287,123 @@ def get_flops_by_dtype(chip_name: str) -> dict[torch.dtype, float]:
     #     logger.warning(f"FLOPs not found for {dtype!r} on {chip!r}")
     #     return None
     # return dtype_to_flops[dtype]
+
+
+@dataclass
+class DeviceSpec:
+    """
+    Abstract device specs for theoretical peak performance calculations.
+
+    Fields will be auto-populated in __post_init__ if not already specified
+    and if data is available
+    - bandwidth (GB/s)
+    - flops (FLOP / s)
+    - vram (bytes)
+    - dtype (torch.dtype) dtype used for theoretical peak performance
+    """
+
+    device_type: str
+    name: Optional[str] = None
+    bandwidth: Optional[int] = None
+    flops: Optional[int] = None
+    vram: Optional[int] = None
+    dtype: Optional[torch.dtype] = torch.float32
+
+    def _post_init_check(self):
+        if self.bandwidth is None:
+            print(
+                "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable SOL calculations"
+            )
+
+        if self.flops is None:
+            print(
+                "GPU flops is None - please specify the flops in FLOP/s in order to enable SOL calculations"
+            )
+
+        if self.vram is None:
+            print("GPU vram is None - please specify the vram in bytes")
+
+    def __str__(self):
+        bw = round(self.bandwidth, 1)
+        tflops = round(self.flops / 1e12, 2)
+        vram_GB = round(self.vram / 1e9, 1)
+        return f"DeviceSpec(name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
+
+
+@dataclass
+class CUDADeviceSpec(DeviceSpec):
+    """
+    CUDA specs for theoretical peak performance
+
+    Fields will be auto-populated in __post_init__ if not already specified
+    and if data is available
+
+    See AVAILABLE_GPU_SPECS for a list of available chips
+    """
+
+    device_type: str = "cuda"
+    # Device index
+    device: Optional[int] = 0
+    # Use tfloat32 FLOPs for dtype == torch.float32
+    use_tensorcores: bool = True
+
+    def __post_init__(self):
+        # Populate fields if not already populated
+        self.name = torch.cuda.get_device_name(self.device)
+
+        # Memory bandwidth
+        if self.bandwidth is None:
+            self.bandwidth = get_bandwidth()
+
+        # FLOPs
+        if self.flops is None:
+            chip_name = get_chip_name(self.device)
+            if chip_name is None:
+                print(f"No FLOPs data available for device name {self.name}")
+            else:
+                flops_by_dtype = get_flops_by_dtype(chip_name)
+                # Populate flops if not already populated
+                if self.dtype in flops_by_dtype:
+                    if self.dtype == torch.float32:
+                        should_use_tf32 = (
+                            self.dtype == torch.float32
+                            and "tfloat32" in flops_by_dtype
+                            and torch.get_float32_matmul_precision() != "highest"
+                            and self.use_tensorcores
+                        )
+                        if should_use_tf32:
+                            self.dtype = "tfloat32"
+                    self.flops = flops_by_dtype[self.dtype]
+                else:
+                    print(
+                        f"Could not find FLOPs for dtype {self.dtype} for device {self.name}"
+                    )
+        # Vram
+        if self.vram is None:
+            self.vram = get_vram()
+
+        # Issue post check warnings
+        self._post_init_check()
+
+
+def roofline_breakeven_point(device: DeviceSpec):
+    """ "
+    Arithmetic intensity (FLOP / byte) transition point from
+    memory-bound to compute-bound
+    """
+    return device.flops / device.bandwidth
+
+
+def memory_latency(device: DeviceSpec, num_bytes: int) -> float:
+    """
+    Memory latency: theoretical peak memory access latency
+    in seconds for a given number of bytes
+    """
+    return num_bytes / device.bandwidth
+
+
+def compute_latency(device: DeviceSpec, FLOPS: int) -> float:
+    """
+    Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
+    """
+    return FLOPS / device.flops
