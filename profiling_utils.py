@@ -22,39 +22,28 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
 
 
 @dataclass
-class CUDADevice:
+class DeviceSpec:
     """
-    GPU specs for theoretical peak performance
+    Abstract device specs for theoretical peak performance calculations.
 
     Fields will be auto-populated in __post_init__ if not already specified
     and if data is available
-    - name: inferred from device
-    - bandwidth (Gb/s): inferred from device
-    - flops (FLOP / s): inferred from dtype if not specified
-    - dtype (torch.dtype): dtype for theoretical peak performance
-    - use_tensorcores (bool): if true, use tfloat32 tensorcores for dtype == torch.float32,
-    true for other dtypes
-    - vram (bytes): inferred from device props
-    See AVAILABLE_GPU_SPECS for a list of available chips
+    - bandwidth (GB/s)
+    - flops (FLOP / s)
+    - vram (bytes)
+    - dtype (torch.dtype) dtype used for theoretical peak performance
     """
 
-    # Device index
-    device: Optional[int] = 0
-    # Chip name, inferred from device
     name: Optional[str] = None
-    # Bandwidth in Gb/s
     bandwidth: Optional[int] = None
-    # Theoretical peak FLOPs in FLOP/s, if not specified will be set based on dtype
     flops: Optional[int] = None
-    dtype: torch.dtype = torch.float32
-    # Use tfloat32 FLOPs for dtype == torch.float32
-    use_tensorcores: bool = True
     vram: Optional[int] = None
+    dtype: Optional[torch.dtype] = torch.float32
 
     def _post_init_check(self):
         if self.bandwidth is None:
             print(
-                "GPU bandwidth is None - please specify the bandwidth in Gb/s in order to enable SOL calculations"
+                "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable SOL calculations"
             )
 
         if self.flops is None:
@@ -64,6 +53,29 @@ class CUDADevice:
 
         if self.vram is None:
             print("GPU vram is None - please specify the vram in bytes")
+
+    def __str__(self):
+        bw = round(self.bandwidth, 1)
+        tflops = round(self.flops / 1e12, 2)
+        vram_GB = round(self.vram / 1e9, 1)
+        return f"DeviceSpec(name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
+
+
+@dataclass
+class CUDADevice(DeviceSpec):
+    """
+    CUDA specs for theoretical peak performance
+
+    Fields will be auto-populated in __post_init__ if not already specified
+    and if data is available
+
+    See AVAILABLE_GPU_SPECS for a list of available chips
+    """
+
+    # Device index
+    device: Optional[int] = 0
+    # Use tfloat32 FLOPs for dtype == torch.float32
+    use_tensorcores: bool = True
 
     def __post_init__(self):
         # Populate fields if not already populated
@@ -96,18 +108,12 @@ class CUDADevice:
                     print(
                         f"Could not find FLOPs for dtype {self.dtype} for device {self.name}"
                     )
-
         # Vram
         if self.vram is None:
             self.vram = get_vram()
+
         # Issue post check warnings
         self._post_init_check()
-
-    def __str__(self):
-        bw_bytes_per_s = round(self.bandwidth / 8, 1)
-        tflops = round(self.flops / 1e12, 2)
-        vram_GB = round(self.vram / 1e9, 1)
-        return f"GPU(name={self.name}, dtype={self.dtype}, bandwidth={bw_bytes_per_s}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
     def roofline_breakeven_point(self, dtype=torch.float16, tensorcore=True):
         """ "
