@@ -71,30 +71,6 @@ class SOLStats:
 #     compute: float
 #     device: CUDADevice
 #     model_config: dict
-def roofline_breakeven_point(device: DeviceSpec):
-    """ "
-    Arithmetic intensity (FLOP / byte) transition point from
-    memory-bound to compute-bound
-    """
-    return device.flops / device.bandwidth
-
-
-def memory_latency(device: DeviceSpec, model_config: TransformerConfig) -> float:
-    """
-    Memory latency: theoretical peak memory access latency
-    in seconds for a given number of bytes
-    """
-    num_bytes = model_config.num_params * model_config.model_dtype.itemsize
-    # device bandwidth is in GB/s
-    bps = device.bandwidth * 1e9
-    return num_bytes / bps
-
-
-def compute_latency(device: DeviceSpec, FLOPS: int) -> float:
-    """
-    Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
-    """
-    return FLOPS / device.flops
 
 
 def model_latency(
@@ -233,12 +209,12 @@ def FLOP_per_token_precise(
 
 def FLOP_per_token(
     *,
-    num_params: int,
-    n_layers: int,
-    kv_seq_len: int,
-    n_heads: Optional[int] = None,
+    num_active_params: int,
+    num_hidden_layers: int,
+    context_len: int,
+    num_attention_heads: Optional[int] = None,
     dim_per_head: Optional[int] = None,
-    hidden_dim: Optional[int] = None,
+    hidden_size: Optional[int] = None,
     mode: FLOPMode = FLOPMode.FORWARD,
 ) -> int:
     """
@@ -272,19 +248,19 @@ def FLOP_per_token(
         - Account for logits calculation
         - Account for kv cache during inference
     """
-    assert hidden_dim is not None or (
-        dim_per_head is not None and n_heads is not None
+    assert hidden_size is not None or (
+        dim_per_head is not None and num_attention_heads is not None
     ), "hidden_dim or (dim_per_head and n_heads) must be provided"
 
-    if hidden_dim is None:
-        hidden_dim = dim_per_head * n_heads
+    if hidden_size is None:
+        hidden_dim = dim_per_head * num_attention_heads
 
-    num_params_flop_per_token = 2 * num_params
+    num_params_flop_per_token = 2 * num_active_params
 
     # First factor of 2: attention scores + attention over values
     # 2nd factor of 2: multiply + add
     # n_layers  * (kv_seq_len * hidden_dim) = GEMM dims (excluding num_tokens -> M)
-    attention_flop_per_token = 2 * 2 * n_layers * kv_seq_len * hidden_dim
+    attention_flop_per_token = 2 * 2 * num_hidden_layers * context_len * hidden_dim
 
     flop_per_token_per_pass = num_params_flop_per_token + attention_flop_per_token
 
@@ -298,6 +274,46 @@ def FLOP_per_token(
         flop_per_token_per_pass *= 4
 
     return flop_per_token_per_pass
+
+
+def roofline_breakeven_point(device: DeviceSpec):
+    """ "
+    Arithmetic intensity (FLOP / byte) transition point from
+    memory-bound to compute-bound
+    """
+    return device.flops / device.bandwidth
+
+
+def memory_latency(device: DeviceSpec, model_config: TransformerConfig) -> float:
+    """
+    Memory latency: theoretical peak memory access latency
+    in seconds for a given number of bytes
+    """
+    num_bytes = model_config.num_params * model_config.model_dtype.itemsize
+    # device bandwidth is in GB/s
+    bps = device.bandwidth * 1e9
+    return num_bytes / bps
+
+
+def compute_latency(
+    device: DeviceSpec,
+    model_config: TransformerConfig,
+    num_tokens: int,
+    context_len: int,
+    mode: FLOPMode = FLOPMode.FORWARD,
+) -> float:
+    """
+    Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
+    """
+    flops_per_token = FLOP_per_token(
+        num_active_params=model_config.num_active_params,
+        num_hidden_layers=model_config.num_hidden_layers,
+        num_attention_heads=model_config.num_attention_heads,
+        context_len=context_len,
+        hidden_size=model_config.hidden_size,
+    )
+    total_flops = flops_per_token * num_tokens
+    return total_flops / device.flops
 
 
 _LLAMA2_CONFIG = {
