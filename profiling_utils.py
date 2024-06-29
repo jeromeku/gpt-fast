@@ -1,7 +1,7 @@
 import torch
 from enum import Enum
 from typing import Optional
-
+from dataclasses import dataclass
 class FLOPMode(Enum):
     FORWARD = 1
     FORWARD_BACKWARD = 2
@@ -14,6 +14,79 @@ def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -
         num_params -= model.tok_embeddings.weight.numel()
     return num_params
 
+@dataclass(frozen=True)
+class GPU():
+    name: str
+    bandwidth: int
+    flops: int
+    tensorops_fp16: int
+    tensorops_fp32: int
+    vram: int
+
+@dataclass(frozen=True)
+class ModelConfig:
+    name: str
+    num_layers: int
+    hidden_size: int
+    intermediate_size: int
+    num_attention_heads: int
+    num_key_value_heads: int
+    kv_cache_dtype: torch.dtype
+    model_dtype: torch.dtype
+    
+@dataclass(frozen=True)
+class SOL_Latency:
+    """
+    Speed of light latency numbers
+    """
+    name: str
+    memory: float
+    compute: float
+    gpu: GPU
+    model_config: dict
+    
+def SOL_latency(gpu: GPU, model: torch.nn.Module, q_seq_len, kv_seq_len: int, batch_size: int, model_dtype: torch.dtype, kv_cache_dtype: torch.dtype, tensorcores=True):
+
+    # Calculate latencies for the model
+    model_size = int(total_model_params(model, exclude_embedding=False) * model_dtype.itemsize)
+    memory_latency = model_size / gpu.bandwidth
+
+    active_params = total_model_params(model, exclude_embedding=True)
+
+    #flops = floating point operations NOT floating point operations per second
+    model_flops_per_token = FLOP_per_token(num_params=active_params, n_layers=model.num_hidden_layers, kv_seq_len=kv_seq_len, hidden_dim=model.hidden_size, mode=FLOPMode.FORWARD)
+    total_model_flops = batch_size * q_seq_len * model_flops_per_token
+    
+    if tensorcores:
+        theoretical_FLOPs = gpu.tensorops_fp32 if model_dtype.itemsize == 4 else gpu.tensorops_fp16
+    else:
+        #FLOPS = floating point operations per second
+        theoretical_FLOPs = gpu.flops
+
+    compute_latency = total_model_flops / theoretical_FLOPs
+
+    #Calculate latencies for kv cache
+    kv_numel = kvcache(num_layers=model.num_hidden_layers, 
+                      hidden_size=model.hidden_size, 
+                      num_attention_heads=model.num_attention_heads, 
+                      num_key_value_heads=model.num_key_value_heads, 
+                      seq_len=kv_seq_len, 
+                      batch_size=batch_size)
+    
+    kv_bytes = kv_numel * kv_cache_dtype.itemsize
+    kv_ops = kv_numel * (model.num_attention_heads // model.num_key_value_heads) * 2 # assume FMA per parameter
+    kv_memory_latency = kv_bytes / gpu.bandwidth
+    kv_compute_latency = kv_ops / gpu.flops
+    
+    return {"model": {"io": io_latency, "compute": compute_latency}, "kvcache": {"io": kv_io_latency, "compute": kv_compute_latency}}
+
+def kvcache(num_layers, hidden_size, num_attention_heads, num_key_value_heads, seq_len, batch_size):
+    """
+    Returns number of elements in kvcache
+    
+    """
+    kvdim = hidden_size // num_attention_heads * num_key_value_heads
+    return batch_size * num_layers * seq_len * kvdim * 2
 
 def FLOP_per_token_precise(*, n_layers, hidden_dim, kv_seq_len, intermediate_dim, vocab_size, mode: FLOPMode = FLOPMode.FORWARD, ffn_calc_type=None):
     """
