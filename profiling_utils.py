@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Optional
 
 import torch
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
 
 from device_specs import (
     CUDADeviceSpec,
@@ -17,10 +18,17 @@ class FLOPMode(Enum):
 
 
 # Exclude embeddings when calculating FLOP since they don't contribute to FLOP count
-def total_model_params(model: torch.nn.Module, exclude_embedding: bool = True) -> int:
+def total_model_params(
+    model: torch.nn.Module,
+    exclude_embedding: bool = True,
+    embedding_key: str = "tok_embeddings",
+) -> int:
     num_params = sum(p.numel() for p in model.parameters())
     if exclude_embedding:
-        num_params -= model.tok_embeddings.weight.numel()
+        if isinstance(model, LlamaForCausalLM):
+            num_params -= model.model.embed_tokens.weight.numel()
+        else:
+            num_params -= getattr(model, embedding_key).weight.numel()
     return num_params
 
 
@@ -40,6 +48,17 @@ class TransformerConfig:
     model_dtype: torch.dtype
     kv_cache_dtype: Optional[torch.dtype]
     num_active_params: Optional[int] = None
+
+    def flops_per_token(
+        self, context_len: int, mode: FLOPMode = FLOPMode.FORWARD
+    ) -> float:
+        return flops_per_token(
+            num_active_params=self.num_active_params,
+            num_hidden_layers=self.num_hidden_layers,
+            context_len=context_len,
+            hidden_size=self.hidden_size,
+            mode=mode,
+        )
 
 
 @dataclass
@@ -253,14 +272,14 @@ def flops_per_token(
     ), "hidden_dim or (dim_per_head and n_heads) must be provided"
 
     if hidden_size is None:
-        hidden_dim = dim_per_head * num_attention_heads
+        hidden_size = dim_per_head * num_attention_heads
 
     num_params_flop_per_token = 2 * num_active_params
 
     # First factor of 2: attention scores + attention over values
     # 2nd factor of 2: multiply + add
     # n_layers  * (kv_seq_len * hidden_dim) = GEMM dims (excluding num_tokens -> M)
-    attention_flop_per_token = 2 * 2 * num_hidden_layers * context_len * hidden_dim
+    attention_flop_per_token = 2 * 2 * num_hidden_layers * context_len * hidden_size
 
     flop_per_token_per_pass = num_params_flop_per_token + attention_flop_per_token
 
