@@ -74,7 +74,7 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
     flops_per_token = MODEL_CFG.flops_per_token(context_len=num_tokens, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
     with open(f"{step_name}.txt", "w") as f:
-        print(m.flops_table(), file=f)
+        print(m.flops_table, file=f)
     print(f"FLOPS prefill: {round(flops_total / 1e9, 1)}GFLOP")
     
     return sample(logits, **sampling_kwargs)[0]
@@ -87,7 +87,7 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
     with open(f"{step_name}.txt", "w") as f:
-        print(m.get_table(m.depth), file=f)
+        print(m.flops_table, file=f)
     kv_seq_len = input_pos[-1].item()
     num_tokens = len(input_pos.reshape(-1))
     assert num_tokens == 1
