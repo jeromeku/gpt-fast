@@ -14,7 +14,11 @@ import torch._dynamo.config
 import torch._inductor.config
 from torch.utils.flop_counter import FlopCounterMode
 import profiling_utils
+from profiling_utils import TransformerConfig, total_model_params, FLOPMode
+from device_specs import CUDADeviceSpec
+
 NUM_PARAMS = None
+MODEL_CFG: TransformerConfig
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
@@ -61,12 +65,13 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
     with FlopCounterMode() as m:
         logits = model(x, input_pos)
     num_tokens = len(input_pos.reshape(-1))
+    assert num_tokens == input_pos.numel()
     assert num_tokens == input_pos.shape[-1]
     assert NUM_PARAMS is not None
     
-    flops_per_token = profiling_utils.FLOP_per_token(num_params=NUM_PARAMS, n_layers=model.config.n_layer, hidden_dim=model.config.dim, kv_seq_len=input_pos.shape[-1])
+    flops_per_token = MODEL_CFG.flops_per_token(context_len=num_tokens, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
-    with open(f"flops-prefill-{str(input_pos.shape)}.txt", "w") as f:
+    with open(f"flops-prefill-{str(input_pos.numel())}.txt", "w") as f:
         print(m.get_table(m.depth), file=f)
     print(f"FLOPS prefill: {round(flops_total / 1e9, 1)}GFLOP")
     
@@ -84,7 +89,7 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     num_tokens = len(input_pos.reshape(-1))
     assert num_tokens == 1
     assert NUM_PARAMS is not None
-    flops_per_token = profiling_utils.FLOP_per_token(num_params=NUM_PARAMS, n_layers=model.config.n_layer, hidden_dim=model.config.dim, kv_seq_len=kv_seq_len)
+    flops_per_token = MODEL_CFG.flops_per_token(context_len=kv_seq_len, mode=FLOPMode.FORWARD)
     print(f"FLOPS decode - {num_tokens} at {kv_seq_len}: {round(flops_per_token * num_tokens / 1e9, 2)}GFLOP")
     
     return sample(logits, **sampling_kwargs)
@@ -173,7 +178,6 @@ def generate(
     """
     Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
     """
-
     is_speculative = draft_model is not None
     # create an empty tensor of the expected final shape and fill in the current tokens
     T = prompt.size(0)
@@ -320,7 +324,28 @@ def main(
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
-
+    device_spec = CUDADeviceSpec(dtype=precision)
+    print(f"Using {device_spec}")
+    print(f"Model Config: {model.config}")
+    num_active_params = total_model_params(model, exclude_embedding=True)
+    num_params = total_model_params(model, exclude_embedding=False)
+    params_check = _get_model_size(model)
+    print(f"Active params, Total Params, Params Check: {num_active_params}, {num_params}, {params_check}")
+    global MODEL_CFG
+    MODEL_CFG = TransformerConfig(num_hidden_layers=model.config.n_layer, 
+                                  num_attention_heads=model.config.n_head, 
+                                  num_key_value_heads=model.config.n_local_heads, 
+                                  model_dtype=precision, 
+                                  kv_cache_dtype=precision, 
+                                  hidden_size=model.config.dim, 
+                                  intermediate_size=model.config.intermediate_size,
+                                  vocab_size=model.config.vocab_size,
+                                  num_params=num_params, 
+                                  num_active_params=num_active_params,
+                                  name=model.__class__.__name__)
+    
+    print("Transformer config: ", MODEL_CFG)
+    
     if is_speculative:
         draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp)
     else:

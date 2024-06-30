@@ -15,37 +15,10 @@ from profiling_utils import (
     compute_latency,
     memory_latency,
     total_model_params,
+    flops_per_token,
+    _flops_per_token_precise
 )
 
-
-class Timer:
-    def __enter__(self):
-        self.start = time.perf_counter()
-        return self
-
-    def __exit__(self, type, value, traceback):
-        self.end = time.perf_counter()
-
-    @property
-    def elapsed(self):
-        return self.end - self.start
-
-
-class CudaTimer:
-    def __enter__(self):
-        self.start = torch.cuda.Event(enable_timing=True)
-        self.end = torch.cuda.Event(enable_timing=True)
-        self.start.record()
-        return self
-
-    def __exit__(self, type, value, traceback):
-        self.end.record()
-        torch.cuda.synchronize()
-        self.elapsed = self.start.elapsed_time(self.end)
-
-    @property
-    def elapsed(self):
-        return self.elapsed
 
 
 def timeit(name):
@@ -130,12 +103,82 @@ TEST_CONFIG = [
         kv_cache_dtype=torch.float16,
     ),
 ]
-test_flops(
-    num_hidden_layers=2,
-    num_attention_heads=4,
-    num_key_value_heads=4,
-    hidden_size=128,
-    intermediate_size=int(2.5 * 128),
-    vocab_size=3200,
-    dtype=torch.float16,
-)
+# test_flops(
+#     num_hidden_layers=2,
+#     num_attention_heads=4,
+#     num_key_value_heads=4,
+#     hidden_size=128,
+#     intermediate_size=int(2.5 * 128),
+#     vocab_size=3200,
+#     dtype=torch.float16,
+# )
+def _test_flop_per_token(
+    *, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs
+):
+    flop_per_token = flops_per_token(
+        num_params=num_params,
+        n_layers=n_layers,
+        kv_seq_len=kv_seq_len,
+        hidden_dim=hidden_dim,
+        mode=mode,
+    )
+    flop_check = (6 * num_params + 12 * n_layers * kv_seq_len * hidden_dim) / 3
+
+    if mode == FLOPMode.FORWARD_BACKWARD:
+        flop_check *= 3
+    elif mode == FLOPMode.ACTIVATION_CHECKPOINT:
+        flop_check *= 4
+
+    assert (
+        flop_per_token == flop_check
+    ), f"({flop_per_token / 1e9} per token) != ({flop_check / 1e9} check)"
+
+
+def _test_flop_precise(
+    *,
+    n_layers,
+    kv_seq_len,
+    hidden_dim,
+    intermediate_dim,
+    vocab_size,
+    mode=FLOPMode.FORWARD,
+    **kwargs,
+):
+    flop_precise = _flops_per_token_precise(
+        n_layers=n_layers,
+        hidden_dim=hidden_dim,
+        kv_seq_len=kv_seq_len,
+        intermediate_dim=intermediate_dim,
+        vocab_size=vocab_size,
+        mode=mode,
+        ffn_calc_type="gpt3",
+    )
+    flop_check = (
+        24 * n_layers * hidden_dim * hidden_dim
+        + 4 * n_layers * kv_seq_len * hidden_dim
+        + 2 * hidden_dim * vocab_size
+    )
+    flop_rough = flops_per_token(
+        num_params=7e9,
+        n_layers=n_layers,
+        kv_seq_len=kv_seq_len,
+        hidden_dim=hidden_dim,
+        mode=mode,
+    )
+    assert (
+        round(flop_precise / 1e9, 1) == round(flop_check / 1e9, 1)
+    ), f"({flop_precise / 1e9} per token) != ({flop_check / 1e9} check) ({flop_rough / 1e9} rough)"
+
+_LLAMA2_CONFIG = {
+    "hidden_dim": 4096,
+    "intermediate_dim": 11008,
+    "kv_seq_len": 4096,
+    "num_attention_heads": 32,
+    "n_layers": 32,
+    "vocab_size": 32000,
+}
+
+if __name__ == "__main__":
+    for m in FLOPMode:
+        _test_flop_per_token(**_LLAMA2_CONFIG, mode=m.value)
+        _test_flop_precise(**_LLAMA2_CONFIG, mode=m.value)
