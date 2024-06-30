@@ -329,7 +329,16 @@ class DeviceSpec:
         vram_GB = round(self.vram / 1e9, 1)
         return f"DeviceSpec(device_type={self.device_type}, name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
-
+    @property
+    def roofline_breakeven_point(self):
+        """
+        Arithmetic intensity (FLOP / byte) transition point from
+        memory-bound to compute-bound
+        """
+        assert self.bandwidth is not None
+        assert self.flops is not None
+        
+        return self.flops / self.bandwidth
 @dataclass
 class CUDADeviceSpec(DeviceSpec):
     """

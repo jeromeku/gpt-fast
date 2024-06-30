@@ -305,15 +305,15 @@ def flops_per_token(
     return flop_per_token_per_pass
 
 
-def roofline_breakeven_point(device: DeviceSpec):
-    """ "
+def _roofline_breakeven_point(device: DeviceSpec):
+    """
     Arithmetic intensity (FLOP / byte) transition point from
     memory-bound to compute-bound
     """
     return device.flops / device.bandwidth
 
 
-def memory_latency(device: DeviceSpec, model_config: TransformerConfig) -> float:
+def _memory_latency(device: DeviceSpec, model_config: TransformerConfig) -> float:
     """
     Memory latency: theoretical peak memory access latency
     in seconds for a given number of bytes
@@ -322,9 +322,7 @@ def memory_latency(device: DeviceSpec, model_config: TransformerConfig) -> float
     # device bandwidth is in GB/s
     bps = device.bandwidth * 1e9
     return num_bytes / bps
-
-
-def compute_latency(
+def _compute_latency(
     device: DeviceSpec,
     model_config: TransformerConfig,
     num_tokens: int,
@@ -345,8 +343,24 @@ def compute_latency(
     total_flops = flops * num_tokens
     return total_flops / device.flops
 
-
-
+STR_TO_UNIT = {"s": 1, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+@dataclass
+class SpeedOfLightStats:
+    device_spec: DeviceSpec
+    model_config: TransformerConfig
+    def memory_latency(self, unit="ms"):
+        assert unit in STR_TO_UNIT
+        lat = _memory_latency(self.device_spec, self.model_config)
+        return lat / STR_TO_UNIT[unit]
+    def compute_latency(self, context_len: int, num_tokens: int, mode: FLOPMode = FLOPMode.FORWARD, unit="ms"):
+        assert unit in STR_TO_UNIT
+        lat = _compute_latency(self.device_spec, self.model_config, num_tokens, context_len, mode=mode)
+        return lat / STR_TO_UNIT[unit]
+    
+    def roofline_breakeven_point(self):
+        return self.device_spec.roofline_breakeven_point
+    def __str__(self):
+        return f"{self.device_spec} {self.model_config}"
 
 class FlopsTimer:
     def __init__(self, name, depth=10):

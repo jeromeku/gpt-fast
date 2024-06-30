@@ -14,12 +14,13 @@ import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention import SDPBackend
 import profiling_utils
-from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer
+from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer, SpeedOfLightStats
 from device_specs import CUDADeviceSpec
 
 NUM_PARAMS = None
 MODEL_CFG: TransformerConfig
 DEVICE_SPEC: CUDADeviceSpec
+SOL: SpeedOfLightStats
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
@@ -66,17 +67,23 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
     step_name = f"prefill-seqlen-{str(input_pos.numel())}"
     with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
-    num_tokens = len(input_pos.reshape(-1))
-    assert num_tokens == input_pos.numel()
-    assert num_tokens == input_pos.shape[-1]
+    batch_size, seqlen = input_pos.shape
+    # seqlen = len(input_pos.reshape(-1))
+    num_tokens = input_pos.numel()
+    
+    assert num_tokens == seqlen
     assert NUM_PARAMS is not None
     
-    flops_per_token = MODEL_CFG.flops_per_token(context_len=num_tokens, mode=FLOPMode.FORWARD)
+    flops_per_token = MODEL_CFG.flops_per_token(context_len=seqlen, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
+    
     with open(f"{step_name}.txt", "w") as f:
         print(m.flops_table, file=f)
-    print(f"FLOPS prefill: {round(flops_total / 1e9, 1)}GFLOP")
+    print(f"FlopCounter, PREFILL: {round(flops_total / 1e9, 1)}GFLOP")
+    mem_lat_ms = SOL.memory_latency(unit="ms")
+    compute_lat_ms = SOL.compute_latency(context_len=seqlen, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
     
+    print(f"Memory Latency: {round(mem_lat_ms, 3)}ms, Compute Latency: {round(compute_lat_ms, 3)}ms")
     return sample(logits, **sampling_kwargs)[0]
 
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -94,6 +101,9 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     assert NUM_PARAMS is not None
     flops_per_token = MODEL_CFG.flops_per_token(context_len=kv_seq_len, mode=FLOPMode.FORWARD)
     print(f"FLOPS decode - {num_tokens} at {kv_seq_len}: {round(flops_per_token * num_tokens / 1e9, 2)}GFLOP")
+    mem_lat_ms = SOL.memory_latency(unit="ms")
+    compute_lat_ms = SOL.compute_latency(context_len=kv_seq_len, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
+    print(f"Memory Latency: {round(mem_lat_ms, 3)}ms, Compute Latency: {round(compute_lat_ms, 3)}ms")
     
     return sample(logits, **sampling_kwargs)
 
@@ -350,7 +360,9 @@ def main(
                                   name=model.__class__.__name__)
     
     print("Transformer config: ", MODEL_CFG)
-    
+    global SOL
+    SOL = SpeedOfLightStats(device_spec=DEVICE_SPEC, model_config=MODEL_CFG)
+        
     if is_speculative:
         draft_model = _load_model(draft_checkpoint_path, device, precision, use_tp)
     else:
@@ -453,7 +465,7 @@ def main(
         tokens_generated = y.size(0) - prompt_length
         tokens_sec = tokens_generated / t
         aggregate_metrics['tokens_per_sec'].append(tokens_sec)
-        print(f"Time for inference {i + 1}: {tokens_generated} tokens generated, {t:.02f} sec total, {tokens_sec:.02f} tokens/sec")
+        print(f"Time for inference {i + 1}: {prompt_length} prompt tokens {tokens_generated} tokens generated, {t:.02f} sec total, {tokens_sec:.02f} tokens/sec")
         print(f"Bandwidth achieved: {model_size * tokens_sec / 1e9:.02f} GB/s")
     print("==========")
     if is_speculative:
