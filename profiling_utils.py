@@ -324,7 +324,7 @@ def compute_latency(
     """
     Compute latency: theoretical peak compute latency in seconds for a given number of FLOPS
     """
-    flops_per_token = flops_per_token(
+    flops = flops_per_token(
         num_active_params=model_config.num_active_params,
         num_hidden_layers=model_config.num_hidden_layers,
         num_attention_heads=model_config.num_attention_heads,
@@ -332,7 +332,7 @@ def compute_latency(
         hidden_size=model_config.hidden_size,
         mode=mode,
     )
-    total_flops = flops_per_token * num_tokens
+    total_flops = flops * num_tokens
     return total_flops / device.flops
 
 

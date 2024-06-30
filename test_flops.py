@@ -9,6 +9,8 @@ from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec
 from profiling_utils import (
     FLOPMode,
     TransformerConfig,
+    compute_latency,
+    memory_latency,
     total_model_params,
 )
 
@@ -64,6 +66,14 @@ def test_flops(
         test_flops = flops_per_token * num_tokens
         print(f"flops = {test_flops}")
         print(f"diff = {test_flops - ref_flops}")
+        mem_lat = memory_latency(device_spec, transformer_config)
+        compute_lat = compute_latency(
+            device_spec, transformer_config, num_tokens=num_tokens, context_len=seq_len
+        )
+
+        print(f"mem_lat = {mem_lat}")
+        print(f"compute_lat = {compute_lat}")
+        print(f"diff = {compute_lat - mem_lat}")
 
 
 TEST_CONFIG = [
