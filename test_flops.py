@@ -6,6 +6,7 @@ from unittest.mock import patch
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaForCausalLM
+from triton.testing import do_bench
 
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec
 from profiling_utils import (
@@ -28,6 +29,23 @@ class Timer:
     @property
     def elapsed(self):
         return self.end - self.start
+
+
+class CudaTimer:
+    def __enter__(self):
+        self.start = torch.cuda.Event(enable_timing=True)
+        self.end = torch.cuda.Event(enable_timing=True)
+        self.start.record()
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.end.record()
+        torch.cuda.synchronize()
+        self.elapsed = self.start.elapsed_time(self.end)
+
+    @property
+    def elapsed(self):
+        return self.elapsed
 
 
 def timeit(name):
