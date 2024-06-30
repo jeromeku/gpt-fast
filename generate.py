@@ -14,11 +14,12 @@ import torch._dynamo.config
 import torch._inductor.config
 from torch.utils.flop_counter import FlopCounterMode
 import profiling_utils
-from profiling_utils import TransformerConfig, total_model_params, FLOPMode
+from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer
 from device_specs import CUDADeviceSpec
 
 NUM_PARAMS = None
 MODEL_CFG: TransformerConfig
+DEVICE_SPEC: CUDADeviceSpec
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
@@ -62,7 +63,8 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    with FlopCounterMode() as m:
+    step_name = f"prefill-{str(input_pos.numel())}"
+    with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
     num_tokens = len(input_pos.reshape(-1))
     assert num_tokens == input_pos.numel()
@@ -71,8 +73,8 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
     
     flops_per_token = MODEL_CFG.flops_per_token(context_len=num_tokens, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
-    with open(f"flops-prefill-{str(input_pos.numel())}.txt", "w") as f:
-        print(m.get_table(m.depth), file=f)
+    with open(f"{step_name}.txt", "w") as f:
+        print(m.flops_table(), file=f)
     print(f"FLOPS prefill: {round(flops_total / 1e9, 1)}GFLOP")
     
     return sample(logits, **sampling_kwargs)[0]
@@ -81,9 +83,10 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
     
-    with FlopCounterMode() as m:
+    step_name = "decode_one_token=" + str(input_pos.item())
+    with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
-    with open(f"flops-{input_pos.item()}.txt", "w") as f:
+    with open(f"{step_name}.txt", "w") as f:
         print(m.get_table(m.depth), file=f)
     kv_seq_len = input_pos[-1].item()
     num_tokens = len(input_pos.reshape(-1))
@@ -324,8 +327,10 @@ def main(
     print("Loading model ...")
     t0 = time.time()
     model = _load_model(checkpoint_path, device, precision, use_tp)
-    device_spec = CUDADeviceSpec(dtype=precision)
-    print(f"Using {device_spec}")
+    
+    global DEVICE_SPEC
+    DEVICE_SPEC = CUDADeviceSpec(dtype=precision)
+    print(f"Using {DEVICE_SPEC}")
     print(f"Model Config: {model.config}")
     num_active_params = total_model_params(model, exclude_embedding=True)
     num_params = total_model_params(model, exclude_embedding=False)

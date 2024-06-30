@@ -349,19 +349,23 @@ def compute_latency(
 
 
 class FlopsTimer:
+    def __init__(self, name, depth=10):
+        self.name = name
+        self.flop_counter = FlopCounterMode(display=False, depth=depth)
+        
     def __enter__(self):
         self.start = time.perf_counter()
-        self.flop_counter = FlopCounterMode()
         self.flop_counter.__enter__()
         return self
 
+    def _print_exit_msg(self):
+        print(f"{self.name}: elapsed={self.elapsed}, flops={self.total_flops / 1e9}GFLOP")
+
     def __exit__(self, type, value, traceback):
         self.end = time.perf_counter()
+        self.elapsed = self.end - self.start
         self.flop_counter.__exit__(type, value, traceback)
-        
-    @property
-    def elapsed(self):
-        return self.end - self.start
+        self._print_exit_msg()        
 
     @property
     def total_flops(self):
@@ -372,6 +376,7 @@ class FlopsTimer:
         return self.flop_counter.get_table()
     
 class CudaFlopsTimer(FlopsTimer):
+        
     def __enter__(self):
         self.start = torch.cuda.Event(enable_timing=True)
         self.end = torch.cuda.Event(enable_timing=True)
@@ -383,8 +388,5 @@ class CudaFlopsTimer(FlopsTimer):
         self.end.record()
         torch.cuda.synchronize()
         self.elapsed = self.start.elapsed_time(self.end)
-
-    @property
-    def elapsed(self):
-        return self.elapsed
+        self._print_exit_msg()        
 
