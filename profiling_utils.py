@@ -361,7 +361,7 @@ class FlopsTimer:
     def _print_exit_msg(self):
         gflops = round(self.total_flops / 1e9, 2)
         ms = round(self.elapsed, 2)
-        print(f"{self.name}:\nElapsed = {ms}ms, FLOPS = {gflops}GFLOPS")
+        print(f"{self.name.upper()}:  Elapsed = {ms}ms, FLOPS = {gflops}GFLOPS")
 
     def __exit__(self, type, value, traceback):
         self.end = time.perf_counter()

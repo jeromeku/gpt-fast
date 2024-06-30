@@ -12,7 +12,7 @@ from typing import Optional, Tuple
 import torch
 import torch._dynamo.config
 import torch._inductor.config
-from torch.utils.flop_counter import FlopCounterMode
+from torch.nn.attention import SDPBackend
 import profiling_utils
 from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer
 from device_specs import CUDADeviceSpec
@@ -63,7 +63,7 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    step_name = f"prefill-{str(input_pos.numel())}"
+    step_name = f"prefill-seqlen-{str(input_pos.numel())}"
     with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
     num_tokens = len(input_pos.reshape(-1))
@@ -83,7 +83,7 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     # input_pos: [B, 1]
     assert input_pos.shape[-1] == 1
     
-    step_name = "decode_one_token=" + str(input_pos.item())
+    step_name = "decode_one_token_seqlen-" + str(input_pos.item())
     with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
     with open(f"{step_name}.txt", "w") as f:
@@ -100,7 +100,7 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
 def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
     new_tokens, new_probs = [], []
     for i in range(num_new_tokens):
-        with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True): # Actually better for Inductor to codegen attention here
+        with torch.nn.attention.sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION, SDPBackend.MATH]): # Actually better for Inductor to codegen attention here
             next_token, next_prob = decode_one_token(
                 model, cur_token, input_pos, **sampling_kwargs
             )
