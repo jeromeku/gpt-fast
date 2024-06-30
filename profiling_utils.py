@@ -69,93 +69,13 @@ class TransformerConfig:
             hidden_size=self.hidden_size,
             mode=mode,
         )
+    @property
+    def model_size(self):
+        """
+        Model size in bytes
+        """
+        return self.num_params * self.model_dtype.itemsize
 
-
-@dataclass
-class SOLStats:
-    """
-    Speed of light stats for a given device and model config
-
-    memory: memory latency in seconds
-    compute: compute latency in seconds
-    device: DeviceSpec
-    model_config: TransformerConfig
-    """
-
-    memory: float
-    compute: float
-    device: DeviceSpec
-    model_config: TransformerConfig
-
-
-# @dataclass(frozen=True)
-# class SOL_Latency:
-#     """
-#     Speed of light latency numbers
-#     """
-
-
-#     name: str
-#     memory: float
-#     compute: float
-#     device: CUDADevice
-#     model_config: dict
-
-
-def model_latency(
-    num_params: int,
-    transformer_config: TransformerConfig,
-    model_dtype: torch.dtype,
-    num_tokens: int,
-    kv_seq_len: int,
-    num_active_params: Optional[int] = None,
-    device: int = 0,
-    mode: FLOPMode = FLOPMode.FORWARD,
-):
-    # Calculate latencies for the model
-    if torch.cuda.is_available():
-        device_spec = CUDADeviceSpec(device, dtype=model_dtype)
-    else:
-        print("Only CUDA devices are supported")
-        return None
-
-    model_size = int(num_params * model_dtype.itemsize)
-    memory_latency = model_size / device_spec.bandwidth
-
-    # flops = floating point operations NOT floating point operations per second
-    model_flops_per_token = flops_per_token(
-        num_params=num_active_params,
-        num_layers=transformer_config.num_hidden_layers,
-        kv_seq_len=kv_seq_len,
-        hidden_size=transformer_config.hidden_size,
-        mode=mode,
-    )
-    total_model_flops = num_tokens * model_flops_per_token
-
-    compute_latency = total_model_flops / device_spec.flops
-
-    return SOLStats(
-        memory=memory_latency,
-        compute=compute_latency,
-        device=device_spec,
-        model_config=transformer_config,
-    )
-    # # Calculate latencies for kv cache
-    # kv_numel = kvcache(
-    #     num_layers=model.num_hidden_layers,
-    #     hidden_size=model.hidden_size,
-    #     num_attention_heads=model.num_attention_heads,
-    #     num_key_value_heads=model.num_key_value_heads,
-    #     seq_len=kv_seq_len,
-    #     batch_size=batch_size,
-    # )
-
-    # kv_bytes = kv_numel * kv_cache_dtype.itemsize
-    # kv_ops = (
-    #     kv_numel * (model.num_attention_heads // model.num_key_value_heads) * 2
-    # )  # assume FMA per parameter
-    # kv_memory_latency = kv_bytes / gpu.bandwidth
-    # kv_compute_latency = kv_ops / gpu.flops
 
 
 def kvcache(
@@ -350,15 +270,39 @@ class SpeedOfLightStats:
     model_config: TransformerConfig
     def memory_latency(self, unit="ms"):
         assert unit in STR_TO_UNIT
-        lat = _memory_latency(self.device_spec, self.model_config)
-        return lat / STR_TO_UNIT[unit]
+        num_bytes = self.model_config.model_size
+        # device bandwidth is in GB/s
+        bytes_per_s = self.device_spec.bandwidth * 1e9
+        latency_in_s = num_bytes / bytes_per_s
+        return latency_in_s / STR_TO_UNIT[unit]
+
     def compute_latency(self, context_len: int, num_tokens: int, mode: FLOPMode = FLOPMode.FORWARD, unit="ms"):
         assert unit in STR_TO_UNIT
-        lat = _compute_latency(self.device_spec, self.model_config, num_tokens, context_len, mode=mode)
-        return lat / STR_TO_UNIT[unit]
+        flops_per_token = self.model_config.flops_per_token(context_len=context_len, mode=mode)
+        total_FLOP = flops_per_token * num_tokens
+        latency_in_s = total_FLOP / self.device_spec.flops
+        return latency_in_s / STR_TO_UNIT[unit]
     
-    def roofline_breakeven_point(self):
-        return self.device_spec.roofline_breakeven_point
+    def breakeven_tokens(self, context_len:int):
+        """
+        Transition point from memory-bound to compute-bound in terms of number of tokens
+        
+        Computed as follows:
+        1) Memory latency (ms): time to load the model 
+        2) Compute latency (ms / token): time to generate 1 token for a given context length
+        3) Transition point (tokens): memory latency / compute latency
+        """
+        #Transition point in terms of arithmetic intensity (FLOP / byte)
+        memory_lat = self.memory_latency()
+        compute_lat = self.compute_latency(context_len=context_len, num_tokens=1, mode=FLOPMode.FORWARD)
+        breakeven_tokens = memory_lat / compute_lat
+        return breakeven_tokens 
+        # flops_per_byte = self.device_spec.roofline_breakeven_point
+        
+        # # Convert to tokens / byte
+        # flops_per_token = self.model_config.flops_per_token(context_len, mode=FLOPMode.FORWARD)   
+        # tokens_per_byte = flops_per_byte / flops_per_token
+        # return tokens_per_byte
     def __str__(self):
         return f"{self.device_spec} {self.model_config}"
 
