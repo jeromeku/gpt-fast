@@ -1,4 +1,6 @@
 import itertools
+import time
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import torch
@@ -13,6 +15,26 @@ from profiling_utils import (
     memory_latency,
     total_model_params,
 )
+
+
+class Timer:
+    def __enter__(self):
+        self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.end = time.perf_counter()
+
+    @property
+    def elapsed(self):
+        return self.end - self.start
+
+
+def timeit(name):
+    start = time.time()
+    yield
+    end = time.time()
+    print(f"{name}: {end - start:.2f} s")
 
 
 def test_flops(
