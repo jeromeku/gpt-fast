@@ -363,18 +363,18 @@ class SpeedOfLightStats:
         return f"{self.device_spec} {self.model_config}"
 
 class FlopsTimer:
-    def __init__(self, name, depth=10):
+    def __init__(self, name, depth=10, precision=1):
         self.name = name
         self.flop_counter = FlopCounterMode(display=False, depth=depth)
-        
+        self.precision = precision
     def __enter__(self):
         self.start = time.perf_counter()
         self.flop_counter.__enter__()
         return self
 
     def _print_exit_msg(self):
-        gflops = round(self.total_flops / 1e9, 2)
-        ms = round(self.elapsed, 2)
+        gflops = round(self.total_flops / 1e9, self.precision)
+        ms = round(self.elapsed, self.precision)
         print(f"{self.name.upper()}:  Elapsed = {ms}ms, FLOPS = {gflops}GFLOPS")
 
     def __exit__(self, type, value, traceback):

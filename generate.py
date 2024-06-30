@@ -67,7 +67,7 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
     step_name = f"prefill-seqlen-{str(input_pos.numel())}"
     with FlopsTimer(step_name) as m:
         logits = model(x, input_pos)
-    batch_size, seqlen = input_pos.shape
+    seqlen = input_pos.shape[-1]
     # seqlen = len(input_pos.reshape(-1))
     num_tokens = input_pos.numel()
     
@@ -100,10 +100,10 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     assert num_tokens == 1
     assert NUM_PARAMS is not None
     flops_per_token = MODEL_CFG.flops_per_token(context_len=kv_seq_len, mode=FLOPMode.FORWARD)
-    print(f"FLOPS decode - {num_tokens} at {kv_seq_len}: {round(flops_per_token * num_tokens / 1e9, 2)}GFLOP")
+    print(f"FLOPS decode - {num_tokens} at {kv_seq_len}: {round(flops_per_token * num_tokens / 1e9, 1)}GFLOP")
     mem_lat_ms = SOL.memory_latency(unit="ms")
     compute_lat_ms = SOL.compute_latency(context_len=kv_seq_len, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
-    print(f"Memory Latency: {round(mem_lat_ms, 3)}ms, Compute Latency: {round(compute_lat_ms, 3)}ms")
+    print(f"Memory Latency: {round(mem_lat_ms, 2)}ms, Compute Latency: {round(compute_lat_ms, 2)}ms")
     
     return sample(logits, **sampling_kwargs)
 
