@@ -22,11 +22,11 @@ class FLOPMode(Enum):
 # Exclude embeddings when calculating FLOP since they don't contribute to FLOP count
 def total_model_params(
     model: torch.nn.Module,
-    exclude_embedding: bool = True,
+    exclude_embeddings: bool = True,
     embedding_key: str = "tok_embeddings",
 ) -> int:
     num_params = sum(p.numel() for p in model.parameters())
-    if exclude_embedding:
+    if exclude_embeddings:
         #Check huggingface model
         model_cls = model.__class__.__name__
         if "causallm" in model_cls.lower():
@@ -36,9 +36,8 @@ def total_model_params(
         else:
             raise ValueError(f"Could not find embedding in model {model_cls}, please specify embedding attribute key")
     return num_params
-
-
-@dataclass(frozen=True)
+        
+@dataclass
 class TransformerConfig:
     """
     Minimal decoder transformer model config per HuggingFace
@@ -80,7 +79,23 @@ class TransformerConfig:
         """
         return self.num_params * self.model_dtype.itemsize
 
-
+    @classmethod
+    def from_model(cls, model):
+        """
+        Initialize config object from a HuggingFace model 
+        """
+        return cls(
+            name=model.__class__.__name__,
+            num_params=model.num_parameters(exclude_embeddings=False),
+            num_active_params=model.num_parameters(exclude_embeddings=True),
+            num_hidden_layers=model.config.num_hidden_layers,
+            hidden_size=model.config.hidden_size,
+            intermediate_size=model.config.intermediate_size,
+            num_attention_heads=model.config.num_attention_heads,
+            num_key_value_heads=model.config.num_key_value_heads,
+            vocab_size=model.config.vocab_size,
+            model_dtype=model.config.torch_dtype,
+        )
 
 def kvcache(
     num_layers,

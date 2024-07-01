@@ -49,23 +49,33 @@ def test_transformer_config(num_hidden_layers, num_attention_heads, num_key_valu
 
     with torch.device("meta"):
         model = LlamaForCausalLM(config=model_config)
-        print(model.__class__.__name__)
+        
+    # Model params check
     for should_exclude in [False, True]:
         num_params_ref = model.num_parameters(exclude_embeddings=should_exclude)
-        num_params_test = total_model_params(model, exclude_embedding=should_exclude)
+        num_params_test = total_model_params(model, exclude_embeddings=should_exclude)
         assert num_params_ref == num_params_test
-    # config = TransformerConfig(
-    #     "test",
-    #     num_params=None,
-    #     num_active_params=None,
-    #     num_hidden_layers=num_hidden_layers,
-    #     hidden_size=hidden_size,
-    #     intermediate_size=intermediate_size,
-    #     num_attention_heads=num_attention_heads,
-    #     num_key_value_heads=num_key_value_heads,
-    #     model_dtype=dtype,
-    #     kv_cache_dtype=dtype
-    # )
+    
+    test_config = TransformerConfig.from_model(model)
+    assert test_config.num_params == model.num_parameters(exclude_embeddings=False)
+    assert test_config.num_active_params == model.num_parameters(exclude_embeddings=True)
+    
+    config = TransformerConfig(
+        "test",
+        num_params=total_model_params(model, exclude_embeddings=False),
+        num_active_params=total_model_params(model, exclude_embeddings=True),
+        num_hidden_layers=num_hidden_layers,
+        hidden_size=hidden_size,
+        intermediate_size=intermediate_size,
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_key_value_heads,
+        model_dtype=dtype,
+        kv_cache_dtype=dtype,
+        vocab_size=vocab_size
+    )
+    # Model size check
+    model_bytes = config.model_size
+    assert model_bytes == config.num_params * config.model_dtype.itemsize
 
 def test_flops(
     num_hidden_layers,
