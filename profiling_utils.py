@@ -394,7 +394,12 @@ class FlopCounterManager(ExitStack):
         try:
             yield self
         finally:
-            self.counts[label] = flop_counter.flop_counts()
-    
+            self.counts[label] = {"total_flops": flop_counter.get_total_flops(), 
+                                  "flops_table": flop_counter.get_table(), 
+                                  "flop_counts": flop_counter.flop_counts}
     def get_counts(self):
         return self.counts            
+
+    @property
+    def total_flops(self):
+        return sum(count["total_flops"] for count in self.counts.values())

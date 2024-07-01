@@ -4,8 +4,7 @@ transformers = pytest.importorskip("transformers")
 LlamaConfig = transformers.models.llama.modeling_llama.LlamaConfig
 LlamaForCausalLM = transformers.models.llama.modeling_llama.LlamaForCausalLM
 
-from parameterized import parameterized
-from parameterized import parameterized_class
+from parameterized import parameterized, parameterized_class
 import unittest
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
@@ -17,6 +16,7 @@ from torch.utils.flop_counter import FlopCounterMode
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from profiling_utils import (
     FLOPMode,
+    FlopCounterManager,
     TransformerConfig,
     SpeedOfLightStats,
     total_model_params,
@@ -171,3 +171,22 @@ class TestTransformerConfig(unittest.TestCase):
                 self.assertEqual(sol.memory_latency(), 3.0)
                 self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
                 self.assertEqual(sol.breakeven_tokens(context_len=seq_len), 2)
+
+@pytest.mark.parametrize("shape", [(128, 128, 128), (4096, 11008, 4096)], ids=lambda p: ",".join(map(str, p)))
+def test_flop_counter_manager(shape):
+    M, N, K = shape
+    a = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
+    
+    cm = FlopCounterManager()
+    with cm.with_label("a"):
+        _ = torch.matmul(a, b)
+    assert cm.total_flops == 2 * M * K * N
+    
+    with cm.with_label("b"):
+        _ = torch.matmul(a, b)
+    assert cm.total_flops == 2 * M * K * N * 2
+    assert "a" in cm.counts
+    assert "b" in cm.counts
+    
+    
