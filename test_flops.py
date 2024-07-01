@@ -1,4 +1,9 @@
 import pytest
+# Skip if transformers is not installed
+transformers = pytest.importorskip("transformers")
+LlamaConfig = transformers.models.llama.modeling_llama.LlamaConfig
+LlamaForCausalLM = transformers.models.llama.modeling_llama.LlamaForCausalLM
+
 from parameterized import parameterized_class
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -7,7 +12,6 @@ from copy import deepcopy
 import itertools
 import torch
 from torch.utils.flop_counter import FlopCounterMode
-from transformers.models.llama.modeling_llama import LlamaConfig, LlamaForCausalLM
 
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from profiling_utils import (
@@ -97,7 +101,8 @@ class TestTransformerConfig(unittest.TestCase):
         self.assertEqual(test_config.model_size, model_bytes)
         self.assertEqual(test_config.num_params, model.num_parameters(exclude_embeddings=False))
         self.assertEqual(test_config.num_active_params, model.num_parameters(exclude_embeddings=True))
-
+    
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
     def test_flops_count(self):
         model_config = deepcopy(self.model_config)
         model_config.num_hidden_layers = 2
