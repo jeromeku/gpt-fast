@@ -4,6 +4,7 @@ transformers = pytest.importorskip("transformers")
 LlamaConfig = transformers.models.llama.modeling_llama.LlamaConfig
 LlamaForCausalLM = transformers.models.llama.modeling_llama.LlamaForCausalLM
 
+from parameterized import parameterized
 from parameterized import parameterized_class
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -62,7 +63,6 @@ class TestTransformerConfig(unittest.TestCase):
         )
         with torch.device("meta"):
             cls.model = LlamaForCausalLM(config=cls.model_config)
-        cls.device_spec = CUDADeviceSpec(device=0, bandwidth=1.555e3, vram=40e9)
 
     def test_params_count(self):
         model = self.model
@@ -127,21 +127,13 @@ class TestTransformerConfig(unittest.TestCase):
         flops = flops_per_token * num_tokens
         #Round to nearest GFlops with 3 significant digits
         assert convert_to_nearest_power(flops, base=1e9, num_decimals=2) == convert_to_nearest_power(flops_ref, base=1e9, num_decimals=2)
-    def test_speed_of_light(self):
-        with patch("torch.cuda.get_device_name", return_value="A100"):
-            transformer_config = TransformerConfig(
-                name="Llama",
-                num_params=total_model_params(model, exclude_embedding=False),
-                num_active_params=total_model_params(model, exclude_embedding=True),
-                num_hidden_layers=self.num_hidden_layers,
-                hidden_size=self.hidden_size,
-                intermediate_size=self.intermediate_size,
-                num_attention_heads=self.num_attention_heads,
-                num_key_value_heads=self.num_key_value_heads,
-                vocab_size=self.vocab_size,
-                model_dtype=self.dtype,
-                kv_cache_dtype=self.dtype,
-            )
+    @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
+    def test_speed_of_light(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
+        model = self.model
+        
+        with patch_device(device_name):
+            transformer_config = TransformerConfig.from_model(model)
+            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
 
             flops_per_token = transformer_config.flops_per_token(
                 context_len=seq_len, mode=FLOPMode.FORWARD
@@ -149,7 +141,7 @@ class TestTransformerConfig(unittest.TestCase):
             num_tokens = batch_size * seq_len
             test_flops = flops_per_token * num_tokens
 
-            sol = SpeedOfLightStats(self.device_spec, transformer_config)
+            sol = SpeedOfLightStats(device_spec, transformer_config)
             stack = ExitStack()
             stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
             stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))

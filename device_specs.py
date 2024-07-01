@@ -265,7 +265,7 @@ def get_bandwidth(device: int = 0) -> int:
     try:
         from triton.testing import get_dram_gbps
 
-        bandwidth = get_dram_gbps(device)
+        bandwidth = get_dram_gbps(device) * 1e9
     except ImportError:
         print("Could not import triton to get DRAM Gbps. Please install triton")
         bandwidth = None
@@ -296,7 +296,7 @@ class DeviceSpec:
 
     Fields will be auto-populated in __post_init__ if not already specified
     and if data is available
-    - bandwidth (GB/s)
+    - bandwidth (bytes /s)
     - flops (FLOP / s)
     - vram (bytes)
     - dtype (torch.dtype) dtype used for theoretical peak performance
@@ -346,7 +346,8 @@ class CUDADeviceSpec(DeviceSpec):
 
     Fields will be auto-populated in __post_init__ if not already specified
     and if data is available
-
+    
+    See DeviceSpec for a list of available fields
     See AVAILABLE_GPU_SPECS for a list of available chips
     """
 
@@ -360,7 +361,7 @@ class CUDADeviceSpec(DeviceSpec):
         # Populate fields if not already populated
         self.name = torch.cuda.get_device_name(self.device)
 
-        # Memory bandwidth
+        # Memory bandwidth in bytes / s
         if self.bandwidth is None:
             self.bandwidth = get_bandwidth()
 
