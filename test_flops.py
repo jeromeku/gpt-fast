@@ -188,5 +188,7 @@ def test_flop_counter_manager(shape):
     assert cm.total_flops == 2 * M * K * N * 2
     assert "a" in cm.counts
     assert "b" in cm.counts
-    
+    assert all(["flops_table" in cm.counts[k] for k in cm.counts.keys()])
+    assert all(["flop_counts" in cm.counts[k] for k in cm.counts.keys()])
+    assert all(["total_flops" in cm.counts[k] for k in cm.counts.keys()])
     

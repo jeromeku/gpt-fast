@@ -383,13 +383,14 @@ class CudaFlopsTimer(FlopsTimer):
         self._print_exit_msg()        
 
 class FlopCounterManager(ExitStack):
-    def __init__(self):
+    def __init__(self, depth=10):
         super().__init__()
         self.counts = {}
-        
+        self._depth = depth
+    
     @contextmanager
     def with_label(self, label):
-        flop_counter = FlopCounterMode(display=False, depth=10)
+        flop_counter = FlopCounterMode(display=False, depth=self._depth)
         self.enter_context(flop_counter)
         try:
             yield self
