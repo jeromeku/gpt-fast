@@ -3,14 +3,12 @@ from enum import Enum
 import inspect
 import math
 from typing import Optional
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 
-from transformers.models.llama.modeling_llama import LlamaForCausalLM
 import time
 from device_specs import (
-    CUDADeviceSpec,
     DeviceSpec,
 )
 
@@ -384,3 +382,19 @@ class CudaFlopsTimer(FlopsTimer):
         self.elapsed = self.start.elapsed_time(self.end)
         self._print_exit_msg()        
 
+class FlopCounterManager(ExitStack):
+    def __init__(self):
+        super().__init__()
+        self.counts = {}
+        
+    @contextmanager
+    def with_label(self, label):
+        flop_counter = FlopCounterMode(display=False, depth=10)
+        self.enter_context(flop_counter)
+        try:
+            yield self
+        finally:
+            self.counts[label] = flop_counter.flop_counts()
+    
+    def get_counts(self):
+        return self.counts            
