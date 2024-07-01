@@ -1,6 +1,4 @@
-import itertools
-import time
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from unittest.mock import patch
 
 import torch
@@ -75,12 +73,19 @@ def test_flops(
         )
         num_tokens = batch_size * seq_len
         test_flops = flops_per_token * num_tokens
+        
         print(f"flops = {test_flops}")
         print(f"time per token = {test_flops / device_spec.flops}")
         print(f"time to load model = {transformer_config.model_size / device_spec.bandwidth}")
         # print(f"diff = {test_flops - ref_flops}")
         sol = SpeedOfLightStats(device_spec, transformer_config)
-        
+        stack = ExitStack()
+        stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
+        stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
+        with stack:
+            print(f"Patched memory latency: {sol.memory_latency()}")
+            print(f"Patched compute latency: {sol.compute_latency(context_len=seq_len, num_tokens=num_tokens)}")
+            print(f"Patched token breakeven: {sol.breakeven_tokens(context_len=seq_len)}")
         unit = "us"
         mem_lat = sol.memory_latency(unit=unit)
         compute_lat = sol.compute_latency(num_tokens=num_tokens, context_len=seq_len, unit=unit)
@@ -93,7 +98,6 @@ def test_flops(
         print(f"mem_lat = {round(mem_lat, 4)}{unit}")
         print(f"compute_lat = {round(compute_lat,4)}{unit}")
         print(f"Ratio at {num_tokens} = {round(compute_lat / mem_lat, 2)}")
-
 
 # TEST_CONFIG = [
 #     TransformerConfig(
