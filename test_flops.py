@@ -7,7 +7,7 @@ from torch.utils.flop_counter import FlopCounterMode
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaForCausalLM
 from triton.testing import do_bench
 
-from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec
+from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from profiling_utils import (
     FLOPMode,
     TransformerConfig,
@@ -17,8 +17,8 @@ from profiling_utils import (
     _flops_per_token_precise
 )
 
-DEVICE_NAMES = ["h100 sxm"]
-DTYPES = [torch.float32, torch.bfloat16]
+DEVICE_NAMES = ["h100 sxm", "a100", "nvidia geforce rtx 4090"]
+DTYPES = [torch.float32, torch.bfloat16, torch.float16]
 USE_TENSORCORES = [True, False]
 DEVICE_CONFIGS = itertools.product(DEVICE_NAMES, DTYPES, USE_TENSORCORES)
 
@@ -32,7 +32,8 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         device_spec = CUDADeviceSpec(dtype=dtype, use_tensorcores=use_tensorcores)
         if dtype == torch.float32 and use_tensorcores:
             dtype = "tfloat32"
-        expected_flops = AVAILABLE_GPU_SPECS[device_name][dtype]
+        chip_name = get_chip_name(device_name)
+        expected_flops = AVAILABLE_GPU_SPECS[chip_name][dtype]
         assert device_spec.flops == expected_flops
 
 
