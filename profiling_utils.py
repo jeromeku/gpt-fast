@@ -268,7 +268,7 @@ STR_TO_UNIT = {"s": 1, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
 class SpeedOfLightStats:
     device_spec: DeviceSpec
     model_config: TransformerConfig
-    def memory_latency(self, unit="ms"):
+    def memory_latency(self, unit="s"):
         assert unit in STR_TO_UNIT
         num_bytes = self.model_config.model_size
         # device bandwidth is in GB/s
@@ -276,7 +276,7 @@ class SpeedOfLightStats:
         latency_in_s = num_bytes / bytes_per_s
         return latency_in_s / STR_TO_UNIT[unit]
 
-    def compute_latency(self, context_len: int, num_tokens: int, mode: FLOPMode = FLOPMode.FORWARD, unit="ms"):
+    def compute_latency(self, context_len: int, num_tokens: int, mode: FLOPMode = FLOPMode.FORWARD, unit="s"):
         assert unit in STR_TO_UNIT
         flops_per_token = self.model_config.flops_per_token(context_len=context_len, mode=mode)
         total_FLOP = flops_per_token * num_tokens
