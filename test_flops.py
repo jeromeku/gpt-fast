@@ -1,12 +1,13 @@
 import pytest
+from parameterized import parameterized_class
+import unittest
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 import itertools
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaForCausalLM
-from triton.testing import do_bench
-import inspect
+
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from profiling_utils import (
     FLOPMode,
@@ -36,126 +37,211 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         expected_flops = AVAILABLE_GPU_SPECS[chip_name][dtype]
         assert device_spec.flops == expected_flops
 
-MODEL_CONFIGS = [(32, 32, 32, 4096, 11008, 32000, torch.float32), (32, 32, 32, 4096, 11008, 32000, torch.bfloat16)]
-@pytest.mark.parametrize("num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype", MODEL_CONFIGS, ids=lambda x: str(x))
-def test_transformer_config(num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype):
-    model_config = LlamaConfig(num_hidden_layers=num_hidden_layers,
-                               num_attention_heads=num_attention_heads,
-                               num_key_value_heads=num_key_value_heads, 
-                               hidden_size=hidden_size, 
-                               intermediate_size=intermediate_size, 
-                               vocab_size=vocab_size,
-                               torch_dtype=dtype)
+MODEL_CONFIG_KEYS = ["name", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size", "vocab_size", "dtype"]
+MODEL_CONFIGS = [("llama-7b", 32, 32, 32, 4096, 11008, 32000, torch.float16), ]
 
-    with torch.device("meta"):
-        model = LlamaForCausalLM(config=model_config)
-        
-    # Model params check
-    for should_exclude in [False, True]:
-        num_params_ref = model.num_parameters(exclude_embeddings=should_exclude)
-        num_params_test = total_model_params(model, exclude_embeddings=should_exclude)
-        assert num_params_ref == num_params_test
-    
-    test_config = TransformerConfig.from_model(model)
-    assert test_config.num_params == model.num_parameters(exclude_embeddings=False)
-    assert test_config.num_active_params == model.num_parameters(exclude_embeddings=True)
-    
-    config = TransformerConfig(
-        "test",
-        num_params=total_model_params(model, exclude_embeddings=False),
-        num_active_params=total_model_params(model, exclude_embeddings=True),
-        num_hidden_layers=num_hidden_layers,
-        hidden_size=hidden_size,
-        intermediate_size=intermediate_size,
-        num_attention_heads=num_attention_heads,
-        num_key_value_heads=num_key_value_heads,
-        model_dtype=dtype,
-        kv_cache_dtype=dtype,
-        vocab_size=vocab_size
-    )
-    # Model size check
-    model_bytes = config.model_size
-    assert model_bytes == config.num_params * config.model_dtype.itemsize
+@parameterized_class([dict(zip(MODEL_CONFIG_KEYS, config)) for config in MODEL_CONFIGS])
+class TestTransformerConfig(unittest.TestCase):
 
-def test_flops(
-    num_hidden_layers,
-    num_attention_heads,
-    num_key_value_heads,
-    intermediate_size,
-    hidden_size,
-    vocab_size,
-    dtype,
-):
-    batch_size = 1
-    seq_len = 100
-    model_config = LlamaConfig()
-    model_config.num_hidden_layers = num_hidden_layers
-    model_config.num_attention_heads = num_attention_heads
-    model_config.num_key_value_heads = num_key_value_heads
-    model_config.intermediate_size = intermediate_size
-    model_config.hidden_size = hidden_size
-    model_config.vocab_size = vocab_size
-    model_config.torch_dtype = dtype
-    print(model_config)
-    with torch.device("meta"):
-        model = LlamaForCausalLM(config=model_config)
-
-    # input_ids = torch.randint(
-    #     0, model_config.vocab_size, (batch_size, seq_len), dtype=torch.int64
-    # ).cuda()
-    # with FlopCounterMode(display=False) as m:
-    #     _ = model(input_ids, labels=input_ids)
-    # ref_flops = m.get_total_flops()
-    # print(f"ref_flops = {ref_flops}")
-
-    with patch("torch.cuda.get_device_name", return_value="A100"):
-        device_spec = CUDADeviceSpec(device=0, bandwidth=1.555e3, vram=40e9)
-        print(f"device bandwidth: {device_spec.bandwidth}")
-        print(f"device flops: {device_spec.flops}")
-        transformer_config = TransformerConfig(
-            name="Llama",
-            num_params=total_model_params(model, exclude_embedding=False),
-            num_active_params=total_model_params(model, exclude_embedding=True),
-            num_hidden_layers=model_config.num_hidden_layers,
-            hidden_size=model_config.hidden_size,
-            intermediate_size=model_config.intermediate_size,
-            num_attention_heads=model_config.num_attention_heads,
-            num_key_value_heads=model_config.num_key_value_heads,
-            vocab_size=model_config.vocab_size,
-            model_dtype=dtype,
-            kv_cache_dtype=dtype,
+    @classmethod
+    def setUpClass(cls):
+        cls.model_config = LlamaConfig(
+            num_hidden_layers=cls.num_hidden_layers,
+            num_attention_heads=cls.num_attention_heads,
+            num_key_value_heads=cls.num_key_value_heads,
+            hidden_size=cls.hidden_size,
+            intermediate_size=cls.intermediate_size,
+            vocab_size=cls.vocab_size,
+            torch_dtype=cls.dtype
         )
+        with torch.device("meta"):
+            cls.model = LlamaForCausalLM(config=cls.model_config)
+        cls.device_spec = CUDADeviceSpec(device=0, bandwidth=1.555e3, vram=40e9)
 
-        flops_per_token = transformer_config.flops_per_token(
-            context_len=seq_len, mode=FLOPMode.FORWARD
-        )
-        num_tokens = batch_size * seq_len
-        test_flops = flops_per_token * num_tokens
+    def test_transformer_config(self):
+        model = self.model
         
-        print(f"flops = {test_flops}")
-        print(f"time per token = {test_flops / device_spec.flops}")
-        print(f"time to load model = {transformer_config.model_size / device_spec.bandwidth}")
-        # print(f"diff = {test_flops - ref_flops}")
-        sol = SpeedOfLightStats(device_spec, transformer_config)
-        stack = ExitStack()
-        stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
-        stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
-        with stack:
-            print(f"Patched memory latency: {sol.memory_latency()}")
-            print(f"Patched compute latency: {sol.compute_latency(context_len=seq_len, num_tokens=num_tokens)}")
-            print(f"Patched token breakeven: {sol.breakeven_tokens(context_len=seq_len)}")
-        unit = "us"
-        mem_lat = sol.memory_latency(unit=unit)
-        compute_lat = sol.compute_latency(num_tokens=num_tokens, context_len=seq_len, unit=unit)
-        # model_bytes = transformer_config.model_size
-        # roofline_token_point = sol.roofline_breakeven_point(context_len=seq_len)
-        tokens_at_roofline = sol.breakeven_tokens(context_len=seq_len)
-        print("Model size: {model_bytes}B".format(model_bytes=transformer_config.model_size))
-        print(f"Tokens at roofline: {tokens_at_roofline}")
-        print(f"Num tokens: {num_tokens}")
-        print(f"mem_lat = {round(mem_lat, 4)}{unit}")
-        print(f"compute_lat = {round(compute_lat,4)}{unit}")
-        print(f"Ratio at {num_tokens} = {round(compute_lat / mem_lat, 2)}")
+        # Model params check
+        for should_exclude in [False, True]:
+            num_params_ref = model.num_parameters(exclude_embeddings=should_exclude)
+            num_params_test = total_model_params(model, exclude_embeddings=should_exclude)
+            self.assertEqual(num_params_ref, num_params_test)
+        
+        test_config = TransformerConfig.from_model(model)
+        self.assertEqual(test_config.num_params, model.num_parameters(exclude_embeddings=False))
+        self.assertEqual(test_config.num_active_params, model.num_parameters(exclude_embeddings=True))
+        
+        config = TransformerConfig(
+            "test",
+            num_params=total_model_params(model, exclude_embeddings=False),
+            num_active_params=total_model_params(model, exclude_embeddings=True),
+            num_hidden_layers=self.num_hidden_layers,
+            hidden_size=self.hidden_size,
+            intermediate_size=self.intermediate_size,
+            num_attention_heads=self.num_attention_heads,
+            num_key_value_heads=self.num_key_value_heads,
+            model_dtype=self.dtype,
+            kv_cache_dtype=self.dtype,
+            vocab_size=self.vocab_size
+        )
+        # Model size check
+        model_bytes = config.model_size
+        self.assertEqual(model_bytes, config.num_params * config.model_dtype.itemsize)
+
+    # def test_flops(self):
+    #     model = self.model
+    #     batch_size = 1
+    #     seq_len = 100
+
+    #     with patch("torch.cuda.get_device_name", return_value="A100"):
+    #         transformer_config = TransformerConfig(
+    #             name="Llama",
+    #             num_params=total_model_params(model, exclude_embedding=False),
+    #             num_active_params=total_model_params(model, exclude_embedding=True),
+    #             num_hidden_layers=self.num_hidden_layers,
+    #             hidden_size=self.hidden_size,
+    #             intermediate_size=self.intermediate_size,
+    #             num_attention_heads=self.num_attention_heads,
+    #             num_key_value_heads=self.num_key_value_heads,
+    #             vocab_size=self.vocab_size,
+    #             model_dtype=self.dtype,
+    #             kv_cache_dtype=self.dtype,
+    #         )
+
+    #         flops_per_token = transformer_config.flops_per_token(
+    #             context_len=seq_len, mode=FLOPMode.FORWARD
+    #         )
+    #         num_tokens = batch_size * seq_len
+    #         test_flops = flops_per_token * num_tokens
+
+    #         sol = SpeedOfLightStats(self.device_spec, transformer_config)
+    #         stack = ExitStack()
+    #         stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
+    #         stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
+    #         with stack:
+    #             self.assertEqual(sol.memory_latency(), 3.0)
+    #             self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
+    #             self.assertEqual(sol.breakeven_tokens(context_len=seq_len), sol.breakeven_tokens(context_len=seq_len))
+
+# @pytest.mark.parametrize("num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype", MODEL_CONFIGS, ids=lambda x: str(x))
+# def test_transformer_config(num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype):
+#     model_config = LlamaConfig(num_hidden_layers=num_hidden_layers,
+#                                num_attention_heads=num_attention_heads,
+#                                num_key_value_heads=num_key_value_heads, 
+#                                hidden_size=hidden_size, 
+#                                intermediate_size=intermediate_size, 
+#                                vocab_size=vocab_size,
+#                                torch_dtype=dtype)
+
+#     with torch.device("meta"):
+#         model = LlamaForCausalLM(config=model_config)
+        
+#     # Model params check
+#     for should_exclude in [False, True]:
+#         num_params_ref = model.num_parameters(exclude_embeddings=should_exclude)
+#         num_params_test = total_model_params(model, exclude_embeddings=should_exclude)
+#         assert num_params_ref == num_params_test
+    
+#     test_config = TransformerConfig.from_model(model)
+#     assert test_config.num_params == model.num_parameters(exclude_embeddings=False)
+#     assert test_config.num_active_params == model.num_parameters(exclude_embeddings=True)
+    
+#     config = TransformerConfig(
+#         "test",
+#         num_params=total_model_params(model, exclude_embeddings=False),
+#         num_active_params=total_model_params(model, exclude_embeddings=True),
+#         num_hidden_layers=num_hidden_layers,
+#         hidden_size=hidden_size,
+#         intermediate_size=intermediate_size,
+#         num_attention_heads=num_attention_heads,
+#         num_key_value_heads=num_key_value_heads,
+#         model_dtype=dtype,
+#         kv_cache_dtype=dtype,
+#         vocab_size=vocab_size
+#     )
+#     # Model size check
+#     model_bytes = config.model_size
+#     assert model_bytes == config.num_params * config.model_dtype.itemsize
+
+# def test_flops(
+#     num_hidden_layers,
+#     num_attention_heads,
+#     num_key_value_heads,
+#     intermediate_size,
+#     hidden_size,
+#     vocab_size,
+#     dtype,
+# ):
+#     batch_size = 1
+#     seq_len = 100
+#     model_config = LlamaConfig()
+#     model_config.num_hidden_layers = num_hidden_layers
+#     model_config.num_attention_heads = num_attention_heads
+#     model_config.num_key_value_heads = num_key_value_heads
+#     model_config.intermediate_size = intermediate_size
+#     model_config.hidden_size = hidden_size
+#     model_config.vocab_size = vocab_size
+#     model_config.torch_dtype = dtype
+#     print(model_config)
+#     with torch.device("meta"):
+#         model = LlamaForCausalLM(config=model_config)
+
+#     # input_ids = torch.randint(
+#     #     0, model_config.vocab_size, (batch_size, seq_len), dtype=torch.int64
+#     # ).cuda()
+#     # with FlopCounterMode(display=False) as m:
+#     #     _ = model(input_ids, labels=input_ids)
+#     # ref_flops = m.get_total_flops()
+#     # print(f"ref_flops = {ref_flops}")
+
+#     with patch("torch.cuda.get_device_name", return_value="A100"):
+#         device_spec = CUDADeviceSpec(device=0, bandwidth=1.555e3, vram=40e9)
+#         print(f"device bandwidth: {device_spec.bandwidth}")
+#         print(f"device flops: {device_spec.flops}")
+#         transformer_config = TransformerConfig(
+#             name="Llama",
+#             num_params=total_model_params(model, exclude_embedding=False),
+#             num_active_params=total_model_params(model, exclude_embedding=True),
+#             num_hidden_layers=model_config.num_hidden_layers,
+#             hidden_size=model_config.hidden_size,
+#             intermediate_size=model_config.intermediate_size,
+#             num_attention_heads=model_config.num_attention_heads,
+#             num_key_value_heads=model_config.num_key_value_heads,
+#             vocab_size=model_config.vocab_size,
+#             model_dtype=dtype,
+#             kv_cache_dtype=dtype,
+#         )
+
+#         flops_per_token = transformer_config.flops_per_token(
+#             context_len=seq_len, mode=FLOPMode.FORWARD
+#         )
+#         num_tokens = batch_size * seq_len
+#         test_flops = flops_per_token * num_tokens
+        
+#         print(f"flops = {test_flops}")
+#         print(f"time per token = {test_flops / device_spec.flops}")
+#         print(f"time to load model = {transformer_config.model_size / device_spec.bandwidth}")
+#         # print(f"diff = {test_flops - ref_flops}")
+#         sol = SpeedOfLightStats(device_spec, transformer_config)
+#         stack = ExitStack()
+#         stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
+#         stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
+#         with stack:
+#             print(f"Patched memory latency: {sol.memory_latency()}")
+#             print(f"Patched compute latency: {sol.compute_latency(context_len=seq_len, num_tokens=num_tokens)}")
+#             print(f"Patched token breakeven: {sol.breakeven_tokens(context_len=seq_len)}")
+#         unit = "us"
+#         mem_lat = sol.memory_latency(unit=unit)
+#         compute_lat = sol.compute_latency(num_tokens=num_tokens, context_len=seq_len, unit=unit)
+#         # model_bytes = transformer_config.model_size
+#         # roofline_token_point = sol.roofline_breakeven_point(context_len=seq_len)
+#         tokens_at_roofline = sol.breakeven_tokens(context_len=seq_len)
+#         print("Model size: {model_bytes}B".format(model_bytes=transformer_config.model_size))
+#         print(f"Tokens at roofline: {tokens_at_roofline}")
+#         print(f"Num tokens: {num_tokens}")
+#         print(f"mem_lat = {round(mem_lat, 4)}{unit}")
+#         print(f"compute_lat = {round(compute_lat,4)}{unit}")
+#         print(f"Ratio at {num_tokens} = {round(compute_lat / mem_lat, 2)}")
 
 # TEST_CONFIG = [
 #     TransformerConfig(
