@@ -1,6 +1,7 @@
-from contextlib import contextmanager, ExitStack
+import pytest
+from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
-
+import itertools
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaForCausalLM
@@ -16,7 +17,23 @@ from profiling_utils import (
     _flops_per_token_precise
 )
 
+DEVICE_NAMES = ["h100 sxm"]
+DTYPES = [torch.float32, torch.bfloat16]
+USE_TENSORCORES = [True, False]
+DEVICE_CONFIGS = itertools.product(DEVICE_NAMES, DTYPES, USE_TENSORCORES)
 
+@contextmanager
+def patch_device(device_name):
+    with patch("torch.cuda.get_device_name", return_value=device_name):
+        yield
+@pytest.mark.parametrize("device_name, dtype, use_tensorcores", DEVICE_CONFIGS, ids=lambda x: str(x))
+def test_device_spec(device_name, dtype, use_tensorcores):
+    with patch_device(device_name):
+        device_spec = CUDADeviceSpec(dtype=dtype, use_tensorcores=use_tensorcores)
+        if dtype == torch.float32 and use_tensorcores:
+            dtype = "tfloat32"
+        expected_flops = AVAILABLE_GPU_SPECS[device_name][dtype]
+        assert device_spec.flops == expected_flops
 
 
 def test_flops(
@@ -113,15 +130,16 @@ def test_flops(
 #         kv_cache_dtype=torch.float16,
 #     ),
 # ]
-test_flops(
-    num_hidden_layers=32,
-    num_attention_heads=32,
-    num_key_value_heads=32,
-    hidden_size=4096,
-    intermediate_size=11008,
-    vocab_size=32000,
-    dtype=torch.float16,
-)
+# test_flops(
+#     num_hidden_layers=32,
+#     num_attention_heads=32,
+#     num_key_value_heads=32,
+#     hidden_size=4096,
+#     intermediate_size=11008,
+#     vocab_size=32000,
+#     dtype=torch.float16,
+# )
+
 # def _test_flop_per_token(
 #     *, n_layers, kv_seq_len, hidden_dim, num_params=7e9, mode=FLOPMode.FORWARD, **kwargs
 # ):
