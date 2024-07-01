@@ -36,6 +36,36 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         expected_flops = AVAILABLE_GPU_SPECS[chip_name][dtype]
         assert device_spec.flops == expected_flops
 
+MODEL_CONFIGS = [(32, 32, 32, 4096, 11008, 32000, torch.float32), (32, 32, 32, 4096, 11008, 32000, torch.bfloat16)]
+@pytest.mark.parametrize("num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype", MODEL_CONFIGS, ids=lambda x: str(x))
+def test_transformer_config(num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype):
+    model_config = LlamaConfig(num_hidden_layers=num_hidden_layers,
+                               num_attention_heads=num_attention_heads,
+                               num_key_value_heads=num_key_value_heads, 
+                               hidden_size=hidden_size, 
+                               intermediate_size=intermediate_size, 
+                               vocab_size=vocab_size,
+                               torch_dtype=dtype)
+
+    with torch.device("meta"):
+        model = LlamaForCausalLM(config=model_config)
+        print(model.__class__.__name__)
+    for should_exclude in [False, True]:
+        num_params_ref = model.num_parameters(exclude_embeddings=should_exclude)
+        num_params_test = total_model_params(model, exclude_embedding=should_exclude)
+        assert num_params_ref == num_params_test
+    # config = TransformerConfig(
+    #     "test",
+    #     num_params=None,
+    #     num_active_params=None,
+    #     num_hidden_layers=num_hidden_layers,
+    #     hidden_size=hidden_size,
+    #     intermediate_size=intermediate_size,
+    #     num_attention_heads=num_attention_heads,
+    #     num_key_value_heads=num_key_value_heads,
+    #     model_dtype=dtype,
+    #     kv_cache_dtype=dtype
+    # )
 
 def test_flops(
     num_hidden_layers,

@@ -27,10 +27,14 @@ def total_model_params(
 ) -> int:
     num_params = sum(p.numel() for p in model.parameters())
     if exclude_embedding:
-        if isinstance(model, LlamaForCausalLM):
+        #Check huggingface model
+        model_cls = model.__class__.__name__
+        if "causallm" in model_cls.lower():
             num_params -= model.model.embed_tokens.weight.numel()
-        else:
+        elif hasattr(model, embedding_key):
             num_params -= getattr(model, embedding_key).weight.numel()
+        else:
+            raise ValueError(f"Could not find embedding in model {model_cls}, please specify embedding attribute key")
     return num_params
 
 
