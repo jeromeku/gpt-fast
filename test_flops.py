@@ -6,7 +6,7 @@ import torch
 from torch.utils.flop_counter import FlopCounterMode
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaForCausalLM
 from triton.testing import do_bench
-
+import inspect
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from profiling_utils import (
     FLOPMode,
