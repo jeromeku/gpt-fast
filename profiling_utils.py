@@ -305,7 +305,7 @@ class SpeedOfLightStats:
         assert unit in STR_TO_UNIT
         num_bytes = self.model_config.model_size
         # device bandwidth is in GB/s
-        bytes_per_s = self.device_spec.bandwidth * 1e9
+        bytes_per_s = self.device_spec.bandwidth
         latency_in_s = num_bytes / bytes_per_s
         return latency_in_s / STR_TO_UNIT[unit]
 

@@ -139,16 +139,40 @@ class TestTransformerConfig(unittest.TestCase):
                 context_len=seq_len, mode=FLOPMode.FORWARD
             )
             num_tokens = batch_size * seq_len
-            test_flops = flops_per_token * num_tokens
+            flop_count = flops_per_token * num_tokens
 
             sol = SpeedOfLightStats(device_spec, transformer_config)
+            
+            # Test latencies
+            m_lat_ref = transformer_config.model_size / device_spec.bandwidth
+            m_lat_test = sol.memory_latency(unit="s")
+            self.assertEqual(m_lat_ref, m_lat_test)
+            
+            c_lat_ref = flop_count / device_spec.flops 
+            c_lat_test = sol.compute_latency(context_len=seq_len, num_tokens=num_tokens, unit="s")
+            self.assertEqual(c_lat_ref, c_lat_test)
+            
+            # Test breakeven
+            # Breakeven is the transition point from memory bound to compute bound 
+            # First calculate in terms of arithmetic intensity (FLOPS / byte)
+            arith_intensity = device_spec.flops / device_spec.bandwidth
+            # Convert to tokens / byte
+            token_intensity = arith_intensity / flops_per_token
+            breakeven_tokens_check = token_intensity * transformer_config.model_size
+            breakeven_tokens = sol.breakeven_tokens(context_len=seq_len)
+            self.assertAlmostEqual(breakeven_tokens, breakeven_tokens_check)
+            
+            # Another breakeven sanity check
+            # memory latency is the time it takes to load the model
+            # compute latency is the time it takes to generate 1 token for a given context length
+            # breakeven point is therefore the ratio of memory latency to compute latency
             stack = ExitStack()
             stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
             stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
             with stack:
                 self.assertEqual(sol.memory_latency(), 3.0)
                 self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
-                self.assertEqual(sol.breakeven_tokens(context_len=seq_len), sol.breakeven_tokens(context_len=seq_len))
+                self.assertEqual(sol.breakeven_tokens(context_len=seq_len), 2)
 
 # @pytest.mark.parametrize("num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype", MODEL_CONFIGS, ids=lambda x: str(x))
 # def test_transformer_config(num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype):
