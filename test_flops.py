@@ -3,6 +3,7 @@ from parameterized import parameterized_class
 import unittest
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
+from copy import deepcopy
 import itertools
 import torch
 from torch.utils.flop_counter import FlopCounterMode
@@ -14,6 +15,7 @@ from profiling_utils import (
     TransformerConfig,
     SpeedOfLightStats,
     total_model_params,
+    convert_to_nearest_power,
     flops_per_token,
     _flops_per_token_precise
 )
@@ -96,11 +98,31 @@ class TestTransformerConfig(unittest.TestCase):
         self.assertEqual(test_config.num_params, model.num_parameters(exclude_embeddings=False))
         self.assertEqual(test_config.num_active_params, model.num_parameters(exclude_embeddings=True))
 
-    def test_flops(self):
-        model = self.model
-        batch_size = 1
-        seq_len = 100
+    def test_flops_count(self):
+        model_config = deepcopy(self.model_config)
+        model_config.num_hidden_layers = 2
+        model = LlamaForCausalLM(model_config).to("cuda")
 
+        batch_size = 1
+        seq_len = 128
+        input_ids = torch.randint(0, model_config.vocab_size, (batch_size, seq_len), device="cuda")
+
+        # FLOPs check
+        model.eval()
+        with FlopCounterMode(display=False) as flop_counter:
+            _ = model(input_ids)
+        flops_ref = flop_counter.get_total_flops()
+        
+        transformer_config = TransformerConfig.from_model(model)
+        
+        flops_per_token = transformer_config.flops_per_token(
+            context_len=seq_len, mode=FLOPMode.FORWARD
+        )
+        num_tokens = batch_size * seq_len
+        flops = flops_per_token * num_tokens
+        #Round to nearest GFlops with 3 significant digits
+        assert convert_to_nearest_power(flops, base=1e9, num_decimals=2) == convert_to_nearest_power(flops_ref, base=1e9, num_decimals=2)
+    def test_speed_of_light(self):
         with patch("torch.cuda.get_device_name", return_value="A100"):
             transformer_config = TransformerConfig(
                 name="Llama",

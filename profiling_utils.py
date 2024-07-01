@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import inspect
+import math
 from typing import Optional
 from contextlib import ExitStack
 import torch
@@ -25,6 +26,11 @@ _HUGGINGFACE_CAUSAL_LM_BASE_CLASSES = [
     "pretrainedmodel",
     "generationmixin",
 ]
+
+def convert_to_nearest_power(n: float, base=1e9, num_decimals=2):
+    nearest_power = int(math.floor(math.log(n, base)))
+    p = math.pow(base, nearest_power)
+    return round(n / p, num_decimals)
 
 def get_all_base_classes(object):
     return [cls.__name__.lower() for cls in inspect.getmro(object.__class__)]
