@@ -58,7 +58,7 @@ class TestTransformerConfig(unittest.TestCase):
             cls.model = LlamaForCausalLM(config=cls.model_config)
         cls.device_spec = CUDADeviceSpec(device=0, bandwidth=1.555e3, vram=40e9)
 
-    def test_transformer_config(self):
+    def test_params_count(self):
         model = self.model
         
         # Model params check
@@ -70,7 +70,9 @@ class TestTransformerConfig(unittest.TestCase):
         test_config = TransformerConfig.from_model(model)
         self.assertEqual(test_config.num_params, model.num_parameters(exclude_embeddings=False))
         self.assertEqual(test_config.num_active_params, model.num_parameters(exclude_embeddings=True))
-        
+    
+    def test_model_size(self):
+        model = self.model
         config = TransformerConfig(
             "test",
             num_params=total_model_params(model, exclude_embeddings=False),
@@ -87,41 +89,47 @@ class TestTransformerConfig(unittest.TestCase):
         # Model size check
         model_bytes = config.model_size
         self.assertEqual(model_bytes, config.num_params * config.model_dtype.itemsize)
+        
+        # Test factory method
+        test_config = TransformerConfig.from_model(model)
+        self.assertEqual(test_config.model_size, model_bytes)
+        self.assertEqual(test_config.num_params, model.num_parameters(exclude_embeddings=False))
+        self.assertEqual(test_config.num_active_params, model.num_parameters(exclude_embeddings=True))
 
-    # def test_flops(self):
-    #     model = self.model
-    #     batch_size = 1
-    #     seq_len = 100
+    def test_flops(self):
+        model = self.model
+        batch_size = 1
+        seq_len = 100
 
-    #     with patch("torch.cuda.get_device_name", return_value="A100"):
-    #         transformer_config = TransformerConfig(
-    #             name="Llama",
-    #             num_params=total_model_params(model, exclude_embedding=False),
-    #             num_active_params=total_model_params(model, exclude_embedding=True),
-    #             num_hidden_layers=self.num_hidden_layers,
-    #             hidden_size=self.hidden_size,
-    #             intermediate_size=self.intermediate_size,
-    #             num_attention_heads=self.num_attention_heads,
-    #             num_key_value_heads=self.num_key_value_heads,
-    #             vocab_size=self.vocab_size,
-    #             model_dtype=self.dtype,
-    #             kv_cache_dtype=self.dtype,
-    #         )
+        with patch("torch.cuda.get_device_name", return_value="A100"):
+            transformer_config = TransformerConfig(
+                name="Llama",
+                num_params=total_model_params(model, exclude_embedding=False),
+                num_active_params=total_model_params(model, exclude_embedding=True),
+                num_hidden_layers=self.num_hidden_layers,
+                hidden_size=self.hidden_size,
+                intermediate_size=self.intermediate_size,
+                num_attention_heads=self.num_attention_heads,
+                num_key_value_heads=self.num_key_value_heads,
+                vocab_size=self.vocab_size,
+                model_dtype=self.dtype,
+                kv_cache_dtype=self.dtype,
+            )
 
-    #         flops_per_token = transformer_config.flops_per_token(
-    #             context_len=seq_len, mode=FLOPMode.FORWARD
-    #         )
-    #         num_tokens = batch_size * seq_len
-    #         test_flops = flops_per_token * num_tokens
+            flops_per_token = transformer_config.flops_per_token(
+                context_len=seq_len, mode=FLOPMode.FORWARD
+            )
+            num_tokens = batch_size * seq_len
+            test_flops = flops_per_token * num_tokens
 
-    #         sol = SpeedOfLightStats(self.device_spec, transformer_config)
-    #         stack = ExitStack()
-    #         stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
-    #         stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
-    #         with stack:
-    #             self.assertEqual(sol.memory_latency(), 3.0)
-    #             self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
-    #             self.assertEqual(sol.breakeven_tokens(context_len=seq_len), sol.breakeven_tokens(context_len=seq_len))
+            sol = SpeedOfLightStats(self.device_spec, transformer_config)
+            stack = ExitStack()
+            stack.enter_context(patch.object(sol, "memory_latency", return_value=3.0))
+            stack.enter_context(patch.object(sol, "compute_latency", return_value=1.5))
+            with stack:
+                self.assertEqual(sol.memory_latency(), 3.0)
+                self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
+                self.assertEqual(sol.breakeven_tokens(context_len=seq_len), sol.breakeven_tokens(context_len=seq_len))
 
 # @pytest.mark.parametrize("num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype", MODEL_CONFIGS, ids=lambda x: str(x))
 # def test_transformer_config(num_hidden_layers, num_attention_heads, num_key_value_heads, hidden_size, intermediate_size, vocab_size, dtype):
