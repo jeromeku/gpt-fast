@@ -10,6 +10,7 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import patch, PropertyMock
 from copy import deepcopy
 import itertools
+import time
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 
@@ -268,15 +269,31 @@ def test_flop_counter_manager(shape):
     b = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
     
     cm = FlopCounterManager()
+    start = time.perf_counter()
     with cm.with_label("a"):
         _ = torch.matmul(a, b)
-    assert cm.total_flops == 2 * M * K * N
+    end = time.perf_counter()
+    #convert to ms
+    elapsed = (end - start) * 1e3
+    expected_flops = 2 * M * K * N
     
+    assert cm.total_flops == expected_flops
+    assert "a" in cm.counts
+    assert abs(cm.counts['a']['elapsed'] - elapsed) < 100
+    assert cm.counts['a']['total_flops'] == expected_flops
+    
+    start = time.perf_counter()
     with cm.with_label("b"):
         _ = torch.matmul(a, b)
-    assert cm.total_flops == 2 * M * K * N * 2
+    end = time.perf_counter()
+    elapsed = (end - start) * 1e3
+    
     assert "a" in cm.counts
     assert "b" in cm.counts
+    assert abs(cm.counts['b']['elapsed'] - elapsed) < 100
+    assert cm.counts['b']['total_flops'] == expected_flops
+    assert cm.total_flops == 2 * expected_flops
+    
     assert all(["flops_table" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["flop_counts" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["total_flops" in cm.counts[k] for k in cm.counts.keys()])

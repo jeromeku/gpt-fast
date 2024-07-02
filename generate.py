@@ -14,13 +14,15 @@ import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention import SDPBackend
 import profiling_utils
-from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer, SpeedOfLightStats
+from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer, SpeedOfLightStats, FlopCounterManager
 from device_specs import CUDADeviceSpec
 
 NUM_PARAMS = None
 MODEL_CFG: TransformerConfig
 DEVICE_SPEC: CUDADeviceSpec
 SOL: SpeedOfLightStats
+FLOPCOUNTER: FlopCounterManager = FlopCounterManager()
+
 def device_sync(device):
     if "cuda" in device:
         torch.cuda.synchronize(device)
