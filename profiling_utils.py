@@ -337,7 +337,36 @@ class SpeedOfLightStats:
         compute_lat = self.compute_latency(context_len=context_len, num_tokens=1, mode=FLOPMode.FORWARD)
         breakeven_tokens = memory_lat / compute_lat
         return breakeven_tokens 
-      
+    
+    def model_bandwidth_utilization(self, token_throughput:float, context_len:int):
+        """
+        Args:
+            token_throughput: number of tokens per second
+            context_len: length of the context
+            
+        Assumption is that we are memory-bound, hence each generated token requires transferring the entire model
+            Model Bandwidth Utilization (MBU) = bytes_per_second / device_bandwidth
+                `bytes_per_second` = `tokens_per_second` * `bytes_transferred_per_token_generated`
+                where `bytes_transferred_per_token_generated` = `model_size` and `tokens_per_second` = `token_throughput`
+            
+            => `MBU` = `token_throughput` * `model_size` / `device_bandwidth`
+        """
+        bytes_per_s = token_throughput * self.model_config.model_size
+        return bytes_per_s / self.device_spec.bandwidth
+
+    def model_flops_utilization(self, token_throughput:float, context_len:int, mode:FLOPMode = FLOPMode.FORWARD):
+        """
+        Args:
+            token_throughput: number of tokens per second
+            context_len: length of the context
+            
+        Assumption is that we are compute-bound
+            Model Flops Utilization (MBU) = `flop_per_second_achieved` / `device_flop_per_second`
+                `flop_per_second_achieved` = `token_throughput` * `flops_per_token`            
+        """
+        flops_per_second_achieved = token_throughput * self.model_config.flops_per_token(context_len=context_len, mode=mode)
+        return flops_per_second_achieved / self.device_spec.flop_per_s
+    
     def __str__(self):
         return f"{self.device_spec} {self.model_config}"
 

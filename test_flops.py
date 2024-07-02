@@ -125,6 +125,24 @@ class TestTransformerConfig(unittest.TestCase):
         flops = flops_per_token * num_tokens
         #Round to nearest GFlops with 3 significant digits
         assert convert_to_nearest_power(flops, base=1e9, num_decimals=2) == convert_to_nearest_power(flops_ref, base=1e9, num_decimals=2)
+
+@parameterized_class([dict(zip(MODEL_CONFIG_KEYS, config)) for config in MODEL_CONFIGS])
+class TestSpeedOfLight(unittest.TestCase):
+    
+    @classmethod
+    def setUpClass(cls):
+        cls.model_config = LlamaConfig(
+            num_hidden_layers=cls.num_hidden_layers,
+            num_attention_heads=cls.num_attention_heads,
+            num_key_value_heads=cls.num_key_value_heads,
+            hidden_size=cls.hidden_size,
+            intermediate_size=cls.intermediate_size,
+            vocab_size=cls.vocab_size,
+            torch_dtype=cls.dtype
+        )
+        with torch.device("meta"):
+            cls.model = LlamaForCausalLM(config=cls.model_config)
+            
     @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
     def test_speed_of_light(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
         model = self.model
@@ -190,6 +208,58 @@ class TestTransformerConfig(unittest.TestCase):
 
         with stack:
             self.assertEqual(sol.arithmetic_intensity(num_tokens=seq_len, context_len=seq_len), 1000/500)
+    
+    @parameterized.expand([("A100", 1.555e12, 40e9, 1, 2048, torch.float16), ])
+    def test_model_bandwidth_utilization(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
+        model = self.model
+        # Assume decode phase
+        num_tokens = batch_size
+
+        tokens_generated = 5
+        total_runtime = 1
+        # tokens / s
+        token_throughput = tokens_generated / total_runtime
+        with patch_device(device_name):
+            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+            transformer_config = TransformerConfig.from_model(model)
+            sol = SpeedOfLightStats(device_spec, transformer_config)
+          
+            # Check that we are in the memory-bound region
+            assert num_tokens < sol.token_balancepoint(context_len=seq_len)
+    
+            # MBU = token_throughput * model_size / device_bandwidth
+            MBU_ref = token_throughput * transformer_config.model_size / device_spec.bandwidth
+            MBU_test = sol.model_bandwidth_utilization(token_throughput=token_throughput, context_len=seq_len)
+            self.assertEqual(MBU_ref, MBU_test)
+            
+    @parameterized.expand([("A100", 1.555e12, 40e9, 128, 2048, torch.float16), ])
+    def test_model_flops_utilization(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
+        model = self.model
+        # Assume compute-bound
+        num_tokens = batch_size
+
+        tokens_generated = 10
+        total_runtime = 2
+        # tokens / s
+        token_throughput = tokens_generated / total_runtime
+        
+        with patch_device(device_name):
+            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+            transformer_config = TransformerConfig.from_model(model)
+            sol = SpeedOfLightStats(device_spec, transformer_config)
+          
+            # Check that we are in the compute-bound region
+            assert num_tokens > sol.token_balancepoint(context_len=seq_len)
+            total_flops = sol.calculate_flops(num_tokens=num_tokens, context_len=seq_len)
+            flop_per_second_achieved = total_flops / total_runtime
+            MFU_ref = flop_per_second_achieved / device_spec.flop_per_s
+            MFU_test = sol.model_flops_utilization(token_throughput=token_throughput, context_len=seq_len)
+            self.assertEqual(MFU_ref, MFU_test)
+   
+    @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
+    def test_model_flops_utilization(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
+        model = self.model
+        # MFU = token_throughput * model_flops / device_bandwidth
             
 @pytest.mark.parametrize("shape", [(128, 128, 128), (4096, 11008, 4096)], ids=lambda p: ",".join(map(str, p)))
 def test_flop_counter_manager(shape):
