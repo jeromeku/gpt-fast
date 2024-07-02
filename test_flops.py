@@ -7,7 +7,7 @@ LlamaForCausalLM = transformers.models.llama.modeling_llama.LlamaForCausalLM
 from parameterized import parameterized, parameterized_class
 import unittest
 from contextlib import ExitStack, contextmanager
-from unittest.mock import patch
+from unittest.mock import patch, PropertyMock
 from copy import deepcopy
 import itertools
 import torch
@@ -150,7 +150,7 @@ class TestTransformerConfig(unittest.TestCase):
             c_lat_test = sol.compute_latency(context_len=seq_len, num_tokens=num_tokens, unit="s")
             self.assertEqual(c_lat_ref, c_lat_test)
             
-            # Test breakeven
+            # Test balancepoint
             # Balancepoint is the transition point from memory bound to compute bound 
             # First calculate in terms of arithmetic intensity (FLOPS / byte)
             arith_intensity = device_spec.flop_per_s / device_spec.bandwidth
@@ -171,7 +171,24 @@ class TestTransformerConfig(unittest.TestCase):
                 self.assertEqual(sol.memory_latency(), 3.0)
                 self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
                 self.assertEqual(sol.token_balancepoint(context_len=seq_len), 2)
+    
+    @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
+    def test_arithmetic_intensity(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
+        model = self.model
+        
+        device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+        transformer_config = TransformerConfig.from_model(model)
+        sol = SpeedOfLightStats(device_spec, transformer_config)
 
+        stack = ExitStack()
+        stack.enter_context(patch.object(sol, "calculate_flops", return_value=1000))
+        stack.enter_context(patch.object(TransformerConfig, "model_size", new_callable=PropertyMock, return_value=500))
+
+        with stack:
+            print(sol.model_config.model_size)
+            print(sol.calculate_flops(num_tokens=seq_len, context_len=seq_len, mode=FLOPMode.FORWARD))
+            self.assertEqual(sol.arithmetic_intensity(num_tokens=seq_len, context_len=seq_len), 1000/500)
+            
 @pytest.mark.parametrize("shape", [(128, 128, 128), (4096, 11008, 4096)], ids=lambda p: ",".join(map(str, p)))
 def test_flop_counter_manager(shape):
     M, N, K = shape
