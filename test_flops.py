@@ -180,13 +180,15 @@ class TestTransformerConfig(unittest.TestCase):
         transformer_config = TransformerConfig.from_model(model)
         sol = SpeedOfLightStats(device_spec, transformer_config)
 
+        # Arithmetic intensity is FLOPs / byte
+        # Should be equal to the total flops (flops_per_token * num_tokens) divided by the model size
+        # `calculate_flops` returns the total_flops, `model_size` returns the model size in bytes
+        # We mock these values as a sanity check
         stack = ExitStack()
         stack.enter_context(patch.object(sol, "calculate_flops", return_value=1000))
         stack.enter_context(patch.object(TransformerConfig, "model_size", new_callable=PropertyMock, return_value=500))
 
         with stack:
-            print(sol.model_config.model_size)
-            print(sol.calculate_flops(num_tokens=seq_len, context_len=seq_len, mode=FLOPMode.FORWARD))
             self.assertEqual(sol.arithmetic_intensity(num_tokens=seq_len, context_len=seq_len), 1000/500)
             
 @pytest.mark.parametrize("shape", [(128, 128, 128), (4096, 11008, 4096)], ids=lambda p: ",".join(map(str, p)))
