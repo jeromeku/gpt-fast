@@ -335,7 +335,7 @@ class SpeedOfLightStats:
         #Transition point in terms of arithmetic intensity (FLOP / byte)
         memory_lat = self.memory_latency()
         compute_lat = self.compute_latency(context_len=context_len, num_tokens=1, mode=FLOPMode.FORWARD)
-        breakeven_tokens = memory_lat / compute_lat
+        breakeven_tokens = int(math.ceil(memory_lat / compute_lat))
         return breakeven_tokens 
     
     def model_bandwidth_utilization(self, token_throughput:float, context_len:int):

@@ -4,6 +4,7 @@ transformers = pytest.importorskip("transformers")
 LlamaConfig = transformers.models.llama.modeling_llama.LlamaConfig
 LlamaForCausalLM = transformers.models.llama.modeling_llama.LlamaForCausalLM
 
+import math
 from parameterized import parameterized, parameterized_class
 import unittest
 from contextlib import ExitStack, contextmanager
@@ -145,7 +146,7 @@ class TestSpeedOfLight(unittest.TestCase):
             cls.model = LlamaForCausalLM(config=cls.model_config)
             
     @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
-    def test_speed_of_light(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
+    def test_balancepoint(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
         model = self.model
         
         with patch_device(device_name):
@@ -175,7 +176,7 @@ class TestSpeedOfLight(unittest.TestCase):
             arith_intensity = device_spec.flop_per_s / device_spec.bandwidth
             # Convert to tokens / byte
             token_intensity = arith_intensity / flops_per_token
-            balancepoint_tokens_check = token_intensity * transformer_config.model_size
+            balancepoint_tokens_check = int(math.ceil(token_intensity * transformer_config.model_size))
             balancepoint_tokens = sol.token_balancepoint(context_len=seq_len)
             self.assertAlmostEqual(balancepoint_tokens, balancepoint_tokens_check)
             
@@ -191,6 +192,14 @@ class TestSpeedOfLight(unittest.TestCase):
                 self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
                 self.assertEqual(sol.token_balancepoint(context_len=seq_len), 2)
     
+            # Check that when num_tokens is below token_balancepoint, memory latency > compute latency
+            num_tokens = balancepoint_tokens_check - 10
+            self.assertGreater(sol.memory_latency(), sol.compute_latency(context_len=seq_len, num_tokens=num_tokens))
+            
+            # Check that when num_tokens is above token_balancepoint, compute latency > memory latency
+            num_tokens = balancepoint_tokens_check + 10
+            self.assertGreater(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), sol.memory_latency())
+             
     @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
     def test_arithmetic_intensity(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
         model = self.model
