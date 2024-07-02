@@ -149,7 +149,7 @@ class TestSpeedOfLight(unittest.TestCase):
         
         with patch_device(device_name):
             transformer_config = TransformerConfig.from_model(model)
-            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram, dtype=dtype)
 
             flops_per_token = transformer_config.flops_per_token(
                 context_len=seq_len, mode=FLOPMode.FORWARD
@@ -194,7 +194,7 @@ class TestSpeedOfLight(unittest.TestCase):
     def test_arithmetic_intensity(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
         model = self.model
         
-        device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+        device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram, dtype=dtype)
         transformer_config = TransformerConfig.from_model(model)
         sol = SpeedOfLightStats(device_spec, transformer_config)
 
@@ -220,7 +220,7 @@ class TestSpeedOfLight(unittest.TestCase):
         # tokens / s
         token_throughput = tokens_generated / total_runtime
         with patch_device(device_name):
-            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram, dtype=dtype)
             transformer_config = TransformerConfig.from_model(model)
             sol = SpeedOfLightStats(device_spec, transformer_config)
           
@@ -244,7 +244,7 @@ class TestSpeedOfLight(unittest.TestCase):
         token_throughput = tokens_generated / total_runtime
         
         with patch_device(device_name):
-            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram)
+            device_spec = CUDADeviceSpec(device=0, bandwidth=bandwidth, vram=vram, dtype=dtype)
             transformer_config = TransformerConfig.from_model(model)
             sol = SpeedOfLightStats(device_spec, transformer_config)
           
