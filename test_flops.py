@@ -199,6 +199,10 @@ class TestSpeedOfLight(unittest.TestCase):
             # Check that when num_tokens is above token_balancepoint, compute latency > memory latency
             num_tokens = balancepoint_tokens_check + 10
             self.assertGreater(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), sol.memory_latency())
+            
+            #Check that when num_tokens is equal to token_balancepoint, memory latency = compute latency
+            num_tokens = balancepoint_tokens_check
+            self.assertAlmostEqual(sol.memory_latency(), sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), places=4)
              
     @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
     def test_arithmetic_intensity(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
