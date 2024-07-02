@@ -40,7 +40,7 @@ def test_device_spec(device_name, dtype, use_tensorcores):
             dtype = "tfloat32"
         chip_name = get_chip_name(device_name)
         expected_flops = AVAILABLE_GPU_SPECS[chip_name][dtype]
-        assert device_spec.flops == expected_flops
+        assert device_spec.flop_per_s == expected_flops
 
 MODEL_CONFIG_KEYS = ["name", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size", "vocab_size", "dtype"]
 MODEL_CONFIGS = [("llama-7b", 32, 32, 32, 4096, 11008, 32000, torch.float16), ]
@@ -146,19 +146,19 @@ class TestTransformerConfig(unittest.TestCase):
             m_lat_test = sol.memory_latency(unit="s")
             self.assertEqual(m_lat_ref, m_lat_test)
             
-            c_lat_ref = flop_count / device_spec.flops 
+            c_lat_ref = flop_count / device_spec.flop_per_s 
             c_lat_test = sol.compute_latency(context_len=seq_len, num_tokens=num_tokens, unit="s")
             self.assertEqual(c_lat_ref, c_lat_test)
             
             # Test breakeven
-            # Breakeven is the transition point from memory bound to compute bound 
+            # Balancepoint is the transition point from memory bound to compute bound 
             # First calculate in terms of arithmetic intensity (FLOPS / byte)
-            arith_intensity = device_spec.flops / device_spec.bandwidth
+            arith_intensity = device_spec.flop_per_s / device_spec.bandwidth
             # Convert to tokens / byte
             token_intensity = arith_intensity / flops_per_token
-            breakeven_tokens_check = token_intensity * transformer_config.model_size
-            breakeven_tokens = sol.breakeven_tokens(context_len=seq_len)
-            self.assertAlmostEqual(breakeven_tokens, breakeven_tokens_check)
+            balancepoint_tokens_check = token_intensity * transformer_config.model_size
+            balancepoint_tokens = sol.token_balancepoint(context_len=seq_len)
+            self.assertAlmostEqual(balancepoint_tokens, balancepoint_tokens_check)
             
             # Another breakeven sanity check
             # memory latency is the time it takes to load the model
@@ -170,7 +170,7 @@ class TestTransformerConfig(unittest.TestCase):
             with stack:
                 self.assertEqual(sol.memory_latency(), 3.0)
                 self.assertEqual(sol.compute_latency(context_len=seq_len, num_tokens=num_tokens), 1.5)
-                self.assertEqual(sol.breakeven_tokens(context_len=seq_len), 2)
+                self.assertEqual(sol.token_balancepoint(context_len=seq_len), 2)
 
 @pytest.mark.parametrize("shape", [(128, 128, 128), (4096, 11008, 4096)], ids=lambda p: ",".join(map(str, p)))
 def test_flop_counter_manager(shape):

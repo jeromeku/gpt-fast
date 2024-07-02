@@ -299,6 +299,12 @@ STR_TO_UNIT = {"s": 1, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
 class SpeedOfLightStats:
     device_spec: DeviceSpec
     model_config: TransformerConfig
+
+
+    def calculate_flops(self, num_tokens: int, context_len: int, mode: FLOPMode = FLOPMode.FORWARD):
+        flops = self.model_config.flops_per_token(context_len=context_len, mode=mode)
+        return flops * num_tokens
+
     def memory_latency(self, unit="s"):
         assert unit in STR_TO_UNIT
         num_bytes = self.model_config.model_size
@@ -306,15 +312,18 @@ class SpeedOfLightStats:
         bytes_per_s = self.device_spec.bandwidth
         latency_in_s = num_bytes / bytes_per_s
         return latency_in_s / STR_TO_UNIT[unit]
-
+    
     def compute_latency(self, context_len: int, num_tokens: int, mode: FLOPMode = FLOPMode.FORWARD, unit="s"):
         assert unit in STR_TO_UNIT
-        flops_per_token = self.model_config.flops_per_token(context_len=context_len, mode=mode)
-        total_FLOP = flops_per_token * num_tokens
-        latency_in_s = total_FLOP / self.device_spec.flops
+        flops = self.calculate_flops(num_tokens=num_tokens, context_len=context_len, mode=mode)
+        latency_in_s = flops / self.device_spec.flop_per_s
         return latency_in_s / STR_TO_UNIT[unit]
     
-    def breakeven_tokens(self, context_len:int):
+    def arithmetic_intensity(self, num_tokens: int, context_len:int):
+        flops = self.calculate_flops(num_tokens=num_tokens, context_len=context_len, mode=FLOPMode.FORWARD)
+        return flops / self.model_config.model_size
+
+    def token_balancepoint(self, context_len:int):
         """
         Transition point from memory-bound to compute-bound in terms of number of tokens
         
@@ -328,12 +337,7 @@ class SpeedOfLightStats:
         compute_lat = self.compute_latency(context_len=context_len, num_tokens=1, mode=FLOPMode.FORWARD)
         breakeven_tokens = memory_lat / compute_lat
         return breakeven_tokens 
-        # flops_per_byte = self.device_spec.roofline_breakeven_point
-        
-        # # Convert to tokens / byte
-        # flops_per_token = self.model_config.flops_per_token(context_len, mode=FLOPMode.FORWARD)   
-        # tokens_per_byte = flops_per_byte / flops_per_token
-        # return tokens_per_byte
+      
     def __str__(self):
         return f"{self.device_spec} {self.model_config}"
 

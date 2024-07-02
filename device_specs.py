@@ -297,7 +297,7 @@ class DeviceSpec:
     Fields will be auto-populated in __post_init__ if not already specified
     and if data is available
     - bandwidth (bytes /s)
-    - flops (FLOP / s)
+    - flop_per_s (FLOP / s)
     - vram (bytes)
     - dtype (torch.dtype) dtype used for theoretical peak performance
     """
@@ -305,7 +305,7 @@ class DeviceSpec:
     device_type: str
     name: Optional[str] = None
     bandwidth: Optional[int] = None
-    flops: Optional[int] = None
+    flop_per_s: Optional[int] = None
     vram: Optional[int] = None
     dtype: Optional[torch.dtype] = torch.float32
 
@@ -315,7 +315,7 @@ class DeviceSpec:
                 "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable SOL calculations"
             )
 
-        if self.flops is None:
+        if self.flop_per_s is None:
             print(
                 "GPU flops is None - please specify the flops in FLOP/s in order to enable SOL calculations"
             )
@@ -325,7 +325,7 @@ class DeviceSpec:
 
     def __str__(self):
         bw = round(self.bandwidth, 4)
-        tflops = round(self.flops / 1e12, 4)
+        tflops = round(self.flop_per_s / 1e12, 4)
         vram_GB = round(self.vram / 1e9, 1)
         return f"DeviceSpec(device_type={self.device_type}, name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
@@ -336,9 +336,9 @@ class DeviceSpec:
         memory-bound to compute-bound
         """
         assert self.bandwidth is not None
-        assert self.flops is not None
+        assert self.flop_per_s is not None
         
-        return self.flops / self.bandwidth
+        return self.flop_per_s / self.bandwidth
 @dataclass
 class CUDADeviceSpec(DeviceSpec):
     """
@@ -366,7 +366,7 @@ class CUDADeviceSpec(DeviceSpec):
             self.bandwidth = get_bandwidth()
 
         # FLOPs
-        if self.flops is None:
+        if self.flop_per_s is None:
             chip_name = get_chip_name(self.device)
             if chip_name is None:
                 print(f"No FLOPs data available for device name {self.name}")
@@ -374,13 +374,13 @@ class CUDADeviceSpec(DeviceSpec):
                 flops_by_dtype = get_flops_by_dtype(chip_name)
                 # Populate flops if not already populated
                 if self.dtype in flops_by_dtype:
-                    self.flops = flops_by_dtype[self.dtype]
+                    self.flop_per_s = flops_by_dtype[self.dtype]
 
                     if self.dtype == torch.float32:
                         use_tf32 = "tfloat32" in flops_by_dtype and self.use_tensorcores
 
                         if use_tf32:
-                            self.flops = flops_by_dtype["tfloat32"]
+                            self.flop_per_s = flops_by_dtype["tfloat32"]
 
                 else:
                     print(
