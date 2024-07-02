@@ -371,11 +371,12 @@ class SpeedOfLightStats:
         return f"{self.device_spec} {self.model_config}"
 
 class FlopsTimer:
-    def __init__(self, name, depth=10, precision=1, display=False):
+    def __init__(self, name, precision=1, display=False, depth=10):
         self.name = name
-        self.flop_counter = FlopCounterMode(display=display, depth=depth)
         self.precision = precision
         self.display = display 
+        self.depth = depth
+        self.flop_counter = FlopCounterMode(display=display, depth=depth)
         
     def __enter__(self):
         self.start = time.perf_counter()
@@ -384,14 +385,14 @@ class FlopsTimer:
 
     def _print_exit_msg(self):
         gflops = round(self.total_flops / 1e9, self.precision)
-        ms = round(self.elapsed, self.precision)
+        s = round(self.elapsed, self.precision)
         if self.display: 
-            print(f"{self.name.upper()}:  Elapsed = {ms}ms, FLOPS = {gflops}GFLOPS")
+            print(f"{self.name.upper()}:  Elapsed = {s}s, FLOPS = {gflops}GFLOPS")
 
     def __exit__(self, type, value, traceback):
         self.end = time.perf_counter()
         #Convert to ms
-        self.elapsed = (self.end - self.start) * 1e3
+        self.elapsed = (self.end - self.start)
         self.flop_counter.__exit__(type, value, traceback)
         if self.display:
             self._print_exit_msg()        
@@ -414,14 +415,15 @@ class CudaFlopsTimer(FlopsTimer):
         self.start = torch.cuda.Event(enable_timing=True)
         self.end = torch.cuda.Event(enable_timing=True)
         self.start.record()
-        self.flop_counter = FlopCounterMode()
+        self.flop_counter = FlopCounterMode(display=self.display, depth=self.depth)
         self.flop_counter.__enter__()
         return self
 
     def __exit__(self, type, value, traceback):
         self.end.record()
         torch.cuda.synchronize()
-        self.elapsed = self.start.elapsed_time(self.end)
+        # Convert from ms to s
+        self.elapsed = self.start.elapsed_time(self.end) * 1e-3
         self.flop_counter.__exit__(type, value, traceback)
 
         if self.display:
@@ -430,26 +432,41 @@ class CudaFlopsTimer(FlopsTimer):
 class FlopCounterManager:
     def __init__(self, depth=10, timer_cls=FlopsTimer, display=False):
         super().__init__()
-        self.counts = {}
+        self._counts = {}
         self._depth = depth
         self.timer_cls = timer_cls
         self.display = display
     @contextmanager
-    def with_label(self, label):
+    def count(self, label: str, num_tokens: int):
         flop_timer = self.timer_cls(name=label, depth=self._depth, display=self.display)
         flop_timer.__enter__()
         try:
             yield self
         finally:
             flop_timer.__exit__(None, None, None)
-            self.counts[label] = {"name": label,
+            self._counts[label] = {"name": label,
+                                  "num_tokens": num_tokens,
                                   "elapsed": flop_timer.elapsed,
+                                  "throughput": num_tokens / flop_timer.elapsed,
                                   "total_flops": flop_timer.total_flops, 
                                   "flops_table": flop_timer.flops_table, 
                                   "flop_counts": flop_timer.flop_counts}
+    @property
+    def counts(self):
+        return self._counts
     def get_counts(self):
-        return self.counts            
+        return self._counts            
 
     @property
     def total_flops(self):
-        return sum(count["total_flops"] for count in self.counts.values())
+        return sum(count["total_flops"] for count in self._counts.values())
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        

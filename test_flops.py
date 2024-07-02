@@ -23,6 +23,8 @@ from profiling_utils import (
     SpeedOfLightStats,
     total_model_params,
     convert_to_nearest_power,
+    FlopsTimer,
+    CudaFlopsTimer
 )
 
 DEVICE_NAMES = ["h100 sxm", "a100", "nvidia geforce rtx 4090"]
@@ -275,36 +277,42 @@ class TestSpeedOfLight(unittest.TestCase):
         model = self.model
         # MFU = token_throughput * model_flops / device_bandwidth
             
-@pytest.mark.parametrize("shape", [(128, 128, 128), (4096, 11008, 4096)], ids=lambda p: ",".join(map(str, p)))
-def test_flop_counter_manager(shape):
-    M, N, K = shape
-    a = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(K, N, dtype=torch.bfloat16, device="cuda")
+@pytest.mark.parametrize("shape", [(1, 1024, 4096, 4096), (128, 1, 1024, 4096)], ids=lambda p: ",".join(map(str, p)))
+@pytest.mark.parametrize("timer_cls", [FlopsTimer, CudaFlopsTimer], ids=lambda p: p.__name__)
+def test_flop_counter_manager(shape, timer_cls):
     
-    cm = FlopCounterManager()
+    batch_size, query_len, in_features, out_features = shape
+    num_tokens = batch_size * query_len
+    a = torch.randn(num_tokens, in_features, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(in_features, out_features, dtype=torch.bfloat16, device="cuda")
+    
+    cm = FlopCounterManager(timer_cls=timer_cls)
     start = time.perf_counter()
-    with cm.with_label("a"):
+    with cm.count("a", num_tokens=num_tokens):
         _ = torch.matmul(a, b)
     end = time.perf_counter()
-    #convert to ms
-    elapsed = (end - start) * 1e3
-    expected_flops = 2 * M * K * N
+    
+    elapsed = (end - start)
+    expected_flops = 2 * num_tokens * in_features * out_features
     
     assert cm.total_flops == expected_flops
-    assert "a" in cm.counts
-    assert abs(cm.counts['a']['elapsed'] - elapsed) < 100
-    assert cm.counts['a']['total_flops'] == expected_flops
+    counts = cm.get_counts()
+    assert "a" in counts
+    assert abs(counts['a']['elapsed'] - elapsed) < 1e-1 # +/- 100ms
+    assert counts['a']['total_flops'] == expected_flops
+    assert counts['a']['throughput'] == counts['a']['num_tokens'] / counts['a']['elapsed']
     
     start = time.perf_counter()
-    with cm.with_label("b"):
+    with cm.count("b", num_tokens=num_tokens):
         _ = torch.matmul(a, b)
     end = time.perf_counter()
-    elapsed = (end - start) * 1e3
+    elapsed = end - start 
     
     assert "a" in cm.counts
     assert "b" in cm.counts
-    assert abs(cm.counts['b']['elapsed'] - elapsed) < 100
-    assert cm.counts['b']['total_flops'] == expected_flops
+    counts = cm.counts
+    assert abs(counts['b']['elapsed'] - elapsed) < 1e-1 # +/- 100ms
+    assert counts['b']['total_flops'] == expected_flops
     assert cm.total_flops == 2 * expected_flops
     
     assert all(["flops_table" in cm.counts[k] for k in cm.counts.keys()])
