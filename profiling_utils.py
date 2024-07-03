@@ -509,16 +509,15 @@ class FlopCounterManager:
         print(text)
         return text
     
-    def get_summary(self, precision=2):
-        token_throughput = round(self.total_tokens / self.total_time, precision)
-        gflops = round(self.total_flops / 1e9, precision)
-        flop_throughput = round(gflops / self.total_time, precision)
+    def get_summary(self):
+        token_throughput = self.total_tokens / self.total_time
+        flop_throughput = self.total_flops / self.total_time
         return { 
                  "total_tokens": self.total_tokens,
-                 "total_time(s)": self.total_time,
-                 "total_flops(GFLOPs)": self.total_flops,
-                 "token_throughput(tokens/s)": token_throughput,
-                 "flop_throughput(GFLOP/s)": flop_throughput
+                 "total_time": self.total_time,
+                 "total_flops": self.total_flops,
+                 "token_throughput": token_throughput,
+                 "flop_throughput": flop_throughput
                 }
     
     def _print_totals(self, precision=2):

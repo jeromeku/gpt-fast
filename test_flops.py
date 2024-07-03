@@ -351,3 +351,16 @@ def test_flop_counter_manager(shape, timer_cls):
     assert all(["flops_table" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["flop_counts" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["total_flops" in cm.counts[k] for k in cm.counts.keys()])
+    
+    summary = cm.get_summary()
+    expected_tokens = 2 * num_tokens
+    expected_total_flops = 2 * expected_flops
+    expected_total_time = cm.total_time
+    expected_token_throughput = expected_tokens / expected_total_time
+    expected_flops_throughput = expected_total_flops / expected_total_time
+    assert summary['total_tokens'] == expected_tokens
+    assert summary['total_flops'] == expected_total_flops
+    assert summary['total_time'] == expected_total_time
+    assert abs(summary['token_throughput'] - expected_token_throughput) < 1e-1
+    assert abs(summary['flop_throughput'] - expected_flops_throughput) < 1e-1
+    
