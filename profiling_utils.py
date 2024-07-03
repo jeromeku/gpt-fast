@@ -1,17 +1,20 @@
+import inspect
+import logging
+import math
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-import inspect
-import math
 from typing import Optional
-from contextlib import ExitStack, contextmanager
+
 import torch
 from torch.utils.flop_counter import FlopCounterMode
 
-import time
 from device_specs import (
     DeviceSpec,
 )
 
+logger = logging.getLogger(__name__)
 
 class FLOPMode(Enum):
     FORWARD = 1
@@ -302,7 +305,6 @@ class SpeedOfLightStats:
     device_spec: DeviceSpec
     model_config: TransformerConfig
 
-
     def calculate_flops(self, num_tokens: int, context_len: int, mode: FLOPMode = FLOPMode.FORWARD):
         flops = self.model_config.flops_per_token(context_len=context_len, mode=mode)
         return flops * num_tokens
@@ -315,10 +317,15 @@ class SpeedOfLightStats:
         latency_in_s = num_bytes / bytes_per_s
         return latency_in_s / STR_TO_UNIT[unit]
     
+    def _is_same_dtype(self):
+        return self.device_spec.dtype == self.model_config.model_dtype
+            
     def compute_latency(self, context_len: int, num_tokens: int, mode: FLOPMode = FLOPMode.FORWARD, unit="s"):
         assert unit in STR_TO_UNIT
         flops = self.calculate_flops(num_tokens=num_tokens, context_len=context_len, mode=mode)
-        latency_in_s = flops / self.device_spec.flop_per_s
+        if not self._is_same_dtype():
+            logger.warning("Model and device have different dtypes, using model dtype instead of device dtype")
+        latency_in_s = flops / self.device_spec.flops_by_dtype[self.model_config.model_dtype]
         return latency_in_s / STR_TO_UNIT[unit]
     
     def arithmetic_intensity(self, num_tokens: int, context_len:int):
@@ -327,7 +334,7 @@ class SpeedOfLightStats:
 
     def token_balancepoint(self, context_len:int):
         """
-        Transition point from memory-bound to compute-bound in terms of number of tokens
+        Transition point from memory-bound to compute-bound in terms of number of tokens (rather than arithmetic intensity)
         
         Computed as follows:
         1) Memory latency (ms): time to load the model 
@@ -367,7 +374,9 @@ class SpeedOfLightStats:
                 `flop_per_second_achieved` = `token_throughput` * `flops_per_token`            
         """
         flops_per_second_achieved = token_throughput * self.model_config.flops_per_token(context_len=context_len, mode=mode)
-        return flops_per_second_achieved / self.device_spec.flop_per_s
+        if not self._is_same_dtype():
+            logger.warning("Device dtype and model dtype do not match. Calculating MFU using model dtype.")
+        return flops_per_second_achieved / self.device_spec.flops_by_dtype[self.model_config.model_dtype]
     
     def __str__(self):
         return f"{self.device_spec} {self.model_config}"

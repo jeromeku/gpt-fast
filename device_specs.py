@@ -1,8 +1,9 @@
 import logging
 from collections import defaultdict
+from copy import copy
 from dataclasses import dataclass, field, fields
 from typing import Dict, Optional, Union
-from copy import copy
+
 import torch
 
 logger = logging.getLogger(__name__)
@@ -309,19 +310,16 @@ class DeviceSpec:
     bandwidth: Optional[int] = None
     flop_per_s: Optional[int] = None
     vram: Optional[int] = None
-    dtype: Optional[torch.dtype] = torch.float32
+    dtype: Optional[torch.dtype] = None
     flops_by_dtype: dict = field(default_factory=dict)
+
     def _post_init_check(self):
-        if self.bandwidth is None:
-            print(
-                "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable speed of light calculations"
-            )
+        assert self.bandwidth is not None, "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable speed of light calculations"
+        assert self.dtype is not None, "GPU dtype is None - please specify the dtype in order to enable speed of light calculations"
+        assert self.flop_per_s is not None, "GPU flop_per_s is None - please specify the flop_per_s in FLOP/s in order to enable speed of light calculations"
+        self.flops_by_dtype.update({self.dtype: self.flop_per_s})
 
-        if self.flop_per_s is None and len(self.flops_by_dtype) == 0:
-            print(
-                "flop_per_s and flops_by_dtype is None - please set at least one in order to enable speed of light calculations"
-            )
-
+        # Not needed for downstream calculations atm, no need to assert
         if self.vram is None:
             print("GPU vram is None - please specify the vram in bytes")
 
@@ -330,7 +328,9 @@ class DeviceSpec:
         if name in {f.name for f in fields(self)}:
             super().__setattr__(name, value)
         else:
-            raise AttributeError(f"Cannot add new attribute '{name}' to {self.__class__.__name__}")
+            raise AttributeError(
+                f"Cannot add new attribute '{name}' to {self.__class__.__name__}"
+            )
 
     def __str__(self):
         if self.bandwidth is not None:
@@ -345,14 +345,20 @@ class DeviceSpec:
     def roofline_balancepoint(self):
         """
         Arithmetic intensity (FLOP / byte) transition point from
-        memory-bound to compute-bound regime.  
-        
+        memory-bound to compute-bound regime.
+
         This is the ridgepoint of the roofline curve.
         """
-        assert self.bandwidth is not None, "Please set bandwidth in order to calculate roofline balancepoint"
-        assert self.flop_per_s is not None, "Please set flop_per_s in order to calculate roofline balancepoint"
-        
+        assert (
+            self.bandwidth is not None
+        ), "Please set bandwidth in order to calculate roofline balancepoint"
+        assert (
+            self.flop_per_s is not None
+        ), "Please set flop_per_s in order to calculate roofline balancepoint"
+
         return self.flop_per_s / self.bandwidth
+
+
 @dataclass
 class CUDADeviceSpec(DeviceSpec):
     """
@@ -360,7 +366,7 @@ class CUDADeviceSpec(DeviceSpec):
 
     Fields will be auto-populated in __post_init__ if not already specified
     and if data is available
-    
+
     See DeviceSpec for a list of available fields
     See AVAILABLE_GPU_SPECS for a list of available chips
     """
@@ -389,7 +395,7 @@ class CUDADeviceSpec(DeviceSpec):
                 flops_by_dtype = get_flops_by_dtype(chip_name)
                 if flops_by_dtype is not None:
                     self.flops_by_dtype.update(flops_by_dtype)
-        
+
                 # Populate flops if not already populated
                 if flops_by_dtype is not None and self.dtype in flops_by_dtype:
                     self.flop_per_s = flops_by_dtype[self.dtype]

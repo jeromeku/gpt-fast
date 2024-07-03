@@ -1,30 +1,32 @@
 import pytest
+
 # Skip if transformers is not installed
 transformers = pytest.importorskip("transformers")
 LlamaConfig = transformers.models.llama.modeling_llama.LlamaConfig
 LlamaForCausalLM = transformers.models.llama.modeling_llama.LlamaForCausalLM
 
+import itertools
 import math
-from parameterized import parameterized, parameterized_class
+import time
 import unittest
 from contextlib import ExitStack, contextmanager
-from unittest.mock import patch, PropertyMock
 from copy import deepcopy
-import itertools
-import time
+from unittest.mock import PropertyMock, patch
+
 import torch
+from parameterized import parameterized, parameterized_class
 from torch.utils.flop_counter import FlopCounterMode
 
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from profiling_utils import (
-    FLOPMode,
+    CudaFlopsTimer,
     FlopCounterManager,
-    TransformerConfig,
-    SpeedOfLightStats,
-    total_model_params,
-    convert_to_nearest_power,
+    FLOPMode,
     FlopsTimer,
-    CudaFlopsTimer
+    SpeedOfLightStats,
+    TransformerConfig,
+    convert_to_nearest_power,
+    total_model_params,
 )
 
 DEVICE_NAMES = ["h100 sxm", "a100", "nvidia geforce rtx 4090"]
@@ -48,13 +50,35 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         assert device_spec.flops_by_dtype == AVAILABLE_GPU_SPECS[chip_name]
         assert device_spec.flops_by_dtype[dtype] == expected_flops
         assert device_spec.roofline_balancepoint == expected_flops / device_spec.bandwidth
+        
         with pytest.raises(AssertionError):
             device_spec.flop_per_s = None
             print(device_spec.roofline_balancepoint)
         # Prevent setting attributes not in named fields to guard against user error
         with pytest.raises(AttributeError):
             device_spec.FLOPs = None
-            
+def test_empty_device_spec():
+    device_name = "fake device"
+    with patch_device(device_name):
+        with pytest.raises(AssertionError):
+            device_spec = CUDADeviceSpec()
+        
+        # Ok to instantiate as long as fields are filled
+        device_spec = CUDADeviceSpec(name=device_name, 
+                                     flop_per_s=1.0, 
+                                     bandwidth=1.0, 
+                                     dtype=torch.float32, 
+                                     use_tensorcores=True)
+    device_name = DEVICE_NAMES[0]
+    
+    with patch_device(device_name):
+        # All critical fields will be auto-filled except for dtype (and vram, but vram is not used for downstream calcs atm)
+        device_spec = CUDADeviceSpec(dtype=torch.float32)
+        
+        # No dtype specified
+        with pytest.raises(AssertionError):
+            device_spec = CUDADeviceSpec()
+        
 MODEL_CONFIG_KEYS = ["name", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size", "vocab_size", "dtype"]
 MODEL_CONFIGS = [("llama-7b", 32, 32, 32, 4096, 11008, 32000, torch.float16), ]
 
