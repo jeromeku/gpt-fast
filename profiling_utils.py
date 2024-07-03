@@ -2,6 +2,7 @@ import inspect
 import json
 import logging
 import math
+import textwrap
 import time
 from contextlib import contextmanager
 from copy import deepcopy
@@ -500,10 +501,25 @@ class FlopCounterManager:
         token_throughput = round(counts['throughput'], precision)
         gflops = round(counts['total_flops'] / 1e9, precision)
         flop_throughput = round(gflops / counts['elapsed'], precision)
-        print(f"""{label.title()}:
+        text = textwrap.dedent(f"""\
+            {label.title()}:
               Elapsed = {ms:,} ms
               Tokens: Total {counts['num_tokens']}, Throughput = {token_throughput} tokens/s
               FLOPs: Total {gflops:,} GFLOPs, Throughput = {flop_throughput:,} GFLOP/s""")
+        print(text)
+        return text
+    
+    def get_summary(self, precision=2):
+        token_throughput = round(self.total_tokens / self.total_time, precision)
+        gflops = round(self.total_flops / 1e9, precision)
+        flop_throughput = round(gflops / self.total_time, precision)
+        return { 
+                 "total_tokens": self.total_tokens,
+                 "total_time(s)": self.total_time,
+                 "total_flops(GFLOPs)": self.total_flops,
+                 "token_throughput(tokens/s)": token_throughput,
+                 "flop_throughput(GFLOP/s)": flop_throughput
+                }
     
     def _print_totals(self, precision=2):
         ms = round(self.total_time * 1e3, precision)
@@ -511,24 +527,17 @@ class FlopCounterManager:
         gflops = round(self.total_flops / 1e9, precision)
         flop_throughput = round(gflops / self.total_time, precision)
         
-        print(f"""FlopCounter Summary:
+        text = textwrap.dedent(f"""\
+            FlopCounter Summary:
               Total time = {ms:,} ms
               Tokens: Total {self.total_tokens}, Throughput {token_throughput} tokens/s
               FLOPs: Total {gflops:,} GFLOPs, Throughput {flop_throughput:,} GFLOP/s""")
-        
+        print(text)
+        return text
+      
     def print_summary(self, labels: list[str] = None, precision=2):
         if labels is None:
             self._print_totals(precision=precision)
         else:
             for label in labels:
                 self._print_single(label, self._counts[label], precision=precision)
-            
-        
-        
-        
-        
-        
-        
-        
-        
-        
