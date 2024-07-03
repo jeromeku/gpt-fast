@@ -32,13 +32,15 @@ def convert_to_nearest_power(n: float, base=1e9, num_decimals=2):
 
 def get_all_base_classes(object):
     return [cls.__name__.lower() for cls in inspect.getmro(object.__class__)]
-# Exclude embeddings when calculating FLOP since they don't contribute to FLOP count
+
 def total_model_params(
     model: torch.nn.Module,
     exclude_embeddings: bool = True,
     embedding_key: str = "tok_embeddings",
 ) -> int:
     num_params = sum(p.numel() for p in model.parameters())
+    
+    # Exclude embeddings when calculating FLOP since they don't contribute to FLOP count
     if exclude_embeddings:
         # Not the cleanest, but check if any base class of the model is in _HUGGINGFACE_CAUSAL_LM_BASE_CLASSES
         if len(set(get_all_base_classes(model)).intersection(_HUGGINGFACE_CAUSAL_LM_BASE_CLASSES)) > 0:

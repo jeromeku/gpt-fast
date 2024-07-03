@@ -45,7 +45,8 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         chip_name = get_chip_name(device_name)
         expected_flops = AVAILABLE_GPU_SPECS[chip_name][dtype]
         assert device_spec.flop_per_s == expected_flops
-
+        assert device_spec.flops_by_dtype == AVAILABLE_GPU_SPECS[chip_name]
+        
 MODEL_CONFIG_KEYS = ["name", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size", "vocab_size", "dtype"]
 MODEL_CONFIGS = [("llama-7b", 32, 32, 32, 4096, 11008, 32000, torch.float16), ]
 

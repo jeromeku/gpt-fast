@@ -1,7 +1,8 @@
 import logging
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Dict, Optional, Union
-
+from copy import copy
 import torch
 
 logger = logging.getLogger(__name__)
@@ -300,6 +301,7 @@ class DeviceSpec:
     - flop_per_s (FLOP / s)
     - vram (bytes)
     - dtype (torch.dtype) dtype used for theoretical peak performance
+    - flops_by_dtype (dict[Union[torch.dtype, str], float]): mapping from dtype to FLOPs
     """
 
     device_type: str
@@ -308,16 +310,16 @@ class DeviceSpec:
     flop_per_s: Optional[int] = None
     vram: Optional[int] = None
     dtype: Optional[torch.dtype] = torch.float32
-
+    flops_by_dtype: dict = field(default_factory=dict)
     def _post_init_check(self):
         if self.bandwidth is None:
             print(
-                "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable SOL calculations"
+                "GPU bandwidth is None - please specify the bandwidth in GB/s in order to enable speed of light calculations"
             )
 
-        if self.flop_per_s is None:
+        if self.flop_per_s is None and len(self.flops_by_dtype) == 0:
             print(
-                "GPU flops is None - please specify the flops in FLOP/s in order to enable SOL calculations"
+                "flop_per_s and flops_by_dtype is None - please set at least one in order to enable speed of light calculations"
             )
 
         if self.vram is None:
@@ -330,7 +332,7 @@ class DeviceSpec:
         return f"DeviceSpec(device_type={self.device_type}, name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
     @property
-    def roofline_breakeven_point(self):
+    def roofline_balancepoint(self):
         """
         Arithmetic intensity (FLOP / byte) transition point from
         memory-bound to compute-bound
@@ -354,7 +356,8 @@ class CUDADeviceSpec(DeviceSpec):
     device_type: str = "cuda"
     # Device index
     device: Optional[int] = 0
-    # Use tfloat32 FLOPs for dtype == torch.float32
+    # Whether to use tfloat32 FLOPs for dtype == torch.float32
+    # We assume that tensorcores will always be used for fp16, int8, and other sub-single precision dtypes
     use_tensorcores: bool = True
 
     def __post_init__(self):
@@ -372,8 +375,11 @@ class CUDADeviceSpec(DeviceSpec):
                 print(f"No FLOPs data available for device name {self.name}")
             else:
                 flops_by_dtype = get_flops_by_dtype(chip_name)
+                if flops_by_dtype is not None:
+                    self.flops_by_dtype.update(flops_by_dtype)
+        
                 # Populate flops if not already populated
-                if self.dtype in flops_by_dtype:
+                if flops_by_dtype is not None and self.dtype in flops_by_dtype:
                     self.flop_per_s = flops_by_dtype[self.dtype]
 
                     if self.dtype == torch.float32:
@@ -381,7 +387,6 @@ class CUDADeviceSpec(DeviceSpec):
 
                         if use_tf32:
                             self.flop_per_s = flops_by_dtype["tfloat32"]
-
                 else:
                     print(
                         f"Could not find FLOPs for dtype {self.dtype} for device {self.name}"
