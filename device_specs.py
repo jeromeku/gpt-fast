@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Dict, Optional, Union
 from copy import copy
 import torch
@@ -325,20 +325,32 @@ class DeviceSpec:
         if self.vram is None:
             print("GPU vram is None - please specify the vram in bytes")
 
+    def __setattr__(self, name, value):
+        # Check if the attribute is already defined
+        if name in {f.name for f in fields(self)}:
+            super().__setattr__(name, value)
+        else:
+            raise AttributeError(f"Cannot add new attribute '{name}' to {self.__class__.__name__}")
+
     def __str__(self):
-        bw = round(self.bandwidth, 4)
-        tflops = round(self.flop_per_s / 1e12, 4)
-        vram_GB = round(self.vram / 1e9, 1)
+        if self.bandwidth is not None:
+            bw = round(self.bandwidth, 4)
+        if self.flop_per_s is not None:
+            tflops = round(self.flop_per_s / 1e12, 4)
+        if self.vram is not None:
+            vram_GB = round(self.vram / 1e9, 1)
         return f"DeviceSpec(device_type={self.device_type}, name={self.name}, dtype={self.dtype}, bandwidth={bw}GB/s, flops={tflops}TFLOPs, vram={vram_GB}GB)"
 
     @property
     def roofline_balancepoint(self):
         """
         Arithmetic intensity (FLOP / byte) transition point from
-        memory-bound to compute-bound
+        memory-bound to compute-bound regime.  
+        
+        This is the ridgepoint of the roofline curve.
         """
-        assert self.bandwidth is not None
-        assert self.flop_per_s is not None
+        assert self.bandwidth is not None, "Please set bandwidth in order to calculate roofline balancepoint"
+        assert self.flop_per_s is not None, "Please set flop_per_s in order to calculate roofline balancepoint"
         
         return self.flop_per_s / self.bandwidth
 @dataclass

@@ -46,7 +46,15 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         expected_flops = AVAILABLE_GPU_SPECS[chip_name][dtype]
         assert device_spec.flop_per_s == expected_flops
         assert device_spec.flops_by_dtype == AVAILABLE_GPU_SPECS[chip_name]
-        
+        assert device_spec.flops_by_dtype[dtype] == expected_flops
+        assert device_spec.roofline_balancepoint == expected_flops / device_spec.bandwidth
+        with pytest.raises(AssertionError):
+            device_spec.flop_per_s = None
+            print(device_spec.roofline_balancepoint)
+        # Prevent setting attributes not in named fields to guard against user error
+        with pytest.raises(AttributeError):
+            device_spec.FLOPs = None
+            
 MODEL_CONFIG_KEYS = ["name", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size", "vocab_size", "dtype"]
 MODEL_CONFIGS = [("llama-7b", 32, 32, 32, 4096, 11008, 32000, torch.float16), ]
 
