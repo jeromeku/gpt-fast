@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 import itertools
+import json
 import sys
 import time
 from pathlib import Path
@@ -13,15 +14,23 @@ import torch
 import torch._dynamo.config
 import torch._inductor.config
 from torch.nn.attention import SDPBackend
+
 import profiling_utils
-from profiling_utils import TransformerConfig, total_model_params, FLOPMode, FlopsTimer, SpeedOfLightStats, FlopCounterManager
 from device_specs import CUDADeviceSpec
+from profiling_utils import (
+    FlopCounterManager,
+    FLOPMode,
+    FlopsTimer,
+    SpeedOfLightStats,
+    TransformerConfig,
+    total_model_params,
+)
 
 NUM_PARAMS = None
 MODEL_CFG: TransformerConfig
 DEVICE_SPEC: CUDADeviceSpec
 SOL: SpeedOfLightStats
-FLOPCOUNTER: FlopCounterManager = FlopCounterManager()
+FLOPCOUNTER: FlopCounterManager = FlopCounterManager(depth=2)
 
 def device_sync(device):
     if "cuda" in device:
@@ -29,7 +38,7 @@ def device_sync(device):
     elif ("cpu" in device) or ("mps" in device):
         pass
     else:
-        print(f"device={device} is not yet suppported")
+        print(f"device={device} is not yet supported")
 
 
 torch._inductor.config.coordinate_descent_tuning = True
@@ -44,6 +53,7 @@ sys.path.append(str(wd))
 
 from model import Transformer
 from tokenizer import get_tokenizer
+
 
 def multinomial_sample_one_no_sync(probs_sort): # Does multinomial sampling without a cuda synchronization
     q = torch.empty_like(probs_sort).exponential_(1)
@@ -66,48 +76,48 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
-    step_name = f"prefill-seqlen-{str(input_pos.numel())}"
-    with FlopsTimer(step_name) as m:
-        logits = model(x, input_pos)
     seqlen = input_pos.shape[-1]
     # seqlen = len(input_pos.reshape(-1))
     num_tokens = input_pos.numel()
-    
     assert num_tokens == seqlen
-    assert NUM_PARAMS is not None
     
+    with FLOPCOUNTER.count("prefill", num_tokens=num_tokens):
+        logits = model(x, input_pos)
+        next_token = sample(logits, **sampling_kwargs)[0]
+
+    # with open("prefill.txt", "w") as f:
+    #     print(FLOPCOUNTER.counts["prefill"], file=f)
+    FLOPCOUNTER.print_summary(labels=['prefill'])
     flops_per_token = MODEL_CFG.flops_per_token(context_len=seqlen, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
-    
-    with open(f"{step_name}.txt", "w") as f:
-        print(m.flops_table, file=f)
-    print(f"FlopCounter, PREFILL: {round(flops_total / 1e9, 1)}GFLOP")
     mem_lat_ms = SOL.memory_latency(unit="ms")
     compute_lat_ms = SOL.compute_latency(context_len=seqlen, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
-    
+    print(f"Flop Check, prefill: {round(flops_total / 1e9, 1)}GFLOPs")    
     print(f"Memory Latency: {round(mem_lat_ms, 3)}ms, Compute Latency: {round(compute_lat_ms, 3)}ms")
-    return sample(logits, **sampling_kwargs)[0]
-
+    
+    return next_token
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     # input_pos: [B, 1]
+    context_len = input_pos[-1].item()
+    num_tokens = input_pos.numel()
     assert input_pos.shape[-1] == 1
-    
-    step_name = "decode_one_token_seqlen-" + str(input_pos.item())
-    with FlopsTimer(step_name) as m:
-        logits = model(x, input_pos)
-    with open(f"{step_name}.txt", "w") as f:
-        print(m.flops_table, file=f)
-    kv_seq_len = input_pos[-1].item()
-    num_tokens = len(input_pos.reshape(-1))
     assert num_tokens == 1
-    assert NUM_PARAMS is not None
-    flops_per_token = MODEL_CFG.flops_per_token(context_len=kv_seq_len, mode=FLOPMode.FORWARD)
-    print(f"FLOPS decode - {num_tokens} at {kv_seq_len}: {round(flops_per_token * num_tokens / 1e9, 1)}GFLOP")
+
+    step_name = "decode-" + str(context_len) + "-" + str(num_tokens)
+    with FLOPCOUNTER.count(step_name, num_tokens=num_tokens):
+        logits = model(x, input_pos)
+        next_token = sample(logits, **sampling_kwargs)
+    # with open(f"{step_name}.txt", "w") as f:
+    FLOPCOUNTER.print_summary(labels=[step_name])
+
+    flops_per_token = MODEL_CFG.flops_per_token(context_len=context_len, mode=FLOPMode.FORWARD)
     mem_lat_ms = SOL.memory_latency(unit="ms")
-    compute_lat_ms = SOL.compute_latency(context_len=kv_seq_len, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
+    compute_lat_ms = SOL.compute_latency(context_len=context_len, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
+
+    print(f"FLOPS decode {num_tokens} token with context {context_len}: {round(flops_per_token * num_tokens / 1e9, 1)}GFLOPs")
     print(f"Memory Latency: {round(mem_lat_ms, 2)}ms, Compute Latency: {round(compute_lat_ms, 2)}ms")
     
-    return sample(logits, **sampling_kwargs)
+    return next_token
 
 def decode_n_tokens(model: Transformer, cur_token: torch.Tensor, input_pos: torch.Tensor, num_new_tokens: int, callback=lambda _: _, **sampling_kwargs):
     new_tokens, new_probs = [], []
@@ -344,8 +354,8 @@ def main(
     DEVICE_SPEC = CUDADeviceSpec(dtype=precision)
     print(f"Using {DEVICE_SPEC}")
     print(f"Model Config: {model.config}")
-    num_active_params = total_model_params(model, exclude_embedding=True)
-    num_params = total_model_params(model, exclude_embedding=False)
+    num_active_params = total_model_params(model, exclude_embeddings=True)
+    num_params = total_model_params(model, exclude_embeddings=False)
     params_check = _get_model_size(model)
     print(f"Active params, Total Params, Params Check: {num_active_params}, {num_params}, {params_check}")
     global MODEL_CFG
@@ -478,7 +488,9 @@ def main(
 
     print(f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}")
     print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
-
+    FLOPCOUNTER.print_summary()
+    with open("flop_counts.json", "w") as f:
+        f.write(FLOPCOUNTER.to_json())
 
 if __name__ == '__main__':
     import argparse

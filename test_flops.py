@@ -351,4 +351,3 @@ def test_flop_counter_manager(shape, timer_cls):
     assert all(["flops_table" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["flop_counts" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["total_flops" in cm.counts[k] for k in cm.counts.keys()])
-    

@@ -1,8 +1,10 @@
 import inspect
+import json
 import logging
 import math
 import time
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -396,9 +398,9 @@ class FlopsTimer:
 
     def _print_exit_msg(self):
         gflops = round(self.total_flops / 1e9, self.precision)
-        s = round(self.elapsed, self.precision)
+        ms = round(self.elapsed * 1e3, self.precision)
         if self.display: 
-            print(f"{self.name.upper()}:  Elapsed = {s}s, FLOPS = {gflops}GFLOPS")
+            print(f"{self.name.upper()}:  Elapsed = {ms} ms, FLOPS = {gflops} GFLOPs")
 
     def __exit__(self, type, value, traceback):
         self.end = time.perf_counter()
@@ -418,7 +420,7 @@ class FlopsTimer:
     
     @property
     def flop_counts(self):
-        return self.flop_counter.flop_counts
+        return self.flop_counter.get_flop_counts()
     
 class CudaFlopsTimer(FlopsTimer):
         
@@ -441,12 +443,14 @@ class CudaFlopsTimer(FlopsTimer):
             self._print_exit_msg()        
 
 class FlopCounterManager:
-    def __init__(self, depth=10, timer_cls=FlopsTimer, display=False):
+    COUNT_KEYS = ["label", "num_tokens", "elapsed", "throughput", "total_flops", "flops_table", "flop_counts"]
+    def __init__(self, depth=10, timer_cls=FlopsTimer, display=False, precision=2):
         super().__init__()
         self._counts = {}
         self._depth = depth
         self.timer_cls = timer_cls
         self.display = display
+
     @contextmanager
     def count(self, label: str, num_tokens: int):
         flop_timer = self.timer_cls(name=label, depth=self._depth, display=self.display)
@@ -455,7 +459,7 @@ class FlopCounterManager:
             yield self
         finally:
             flop_timer.__exit__(None, None, None)
-            self._counts[label] = {"name": label,
+            self._counts[label] = {"label": label,
                                   "num_tokens": num_tokens,
                                   "elapsed": flop_timer.elapsed,
                                   "throughput": num_tokens / flop_timer.elapsed,
@@ -471,7 +475,54 @@ class FlopCounterManager:
     @property
     def total_flops(self):
         return sum(count["total_flops"] for count in self._counts.values())
+    
+    @property
+    def total_tokens(self):
+        return sum(count["num_tokens"] for count in self._counts.values())
+    
+    @property
+    def total_time(self):
+        return sum(count["elapsed"] for count in self._counts.values())
+    
+    def to_dict(self):
+        # Convert flop_counts from OpOverloadPackets to str
+        flop_counts = deepcopy(self._counts)
+        for label, counts in flop_counts.items():
+            flop_counts[label]['flop_counts'] = {mod: {str(op): count for op, count in op_count.items()} for mod, op_count in counts['flop_counts'].items()}
+        return flop_counts
+    
+    def to_json(self):
+        # Need to convert flop_counts from OpOverloadPackets to str in order to serialize
+        return json.dumps(self.to_dict(), indent=2)
+    
+    def _print_single(self, label, counts, precision):
+        ms = round(counts['elapsed'] * 1e3, precision)
+        token_throughput = round(counts['throughput'], precision)
+        gflops = round(counts['total_flops'] / 1e9, precision)
+        flop_throughput = round(gflops / counts['elapsed'], precision)
+        print(f"""{label.title()}:
+              Elapsed = {ms:,} ms
+              Tokens: Total {counts['num_tokens']}, Throughput = {token_throughput} tokens/s
+              FLOPs: Total {gflops:,} GFLOPs, Throughput = {flop_throughput:,} GFLOP/s""")
+    
+    def _print_totals(self, precision=2):
+        ms = round(self.total_time * 1e3, precision)
+        token_throughput = round(self.total_tokens / self.total_time, precision)
+        gflops = round(self.total_flops / 1e9, precision)
+        flop_throughput = round(gflops / self.total_time, precision)
         
+        print(f"""FlopCounter Summary:
+              Total time = {ms:,} ms
+              Tokens: Total {self.total_tokens}, Throughput {token_throughput} tokens/s
+              FLOPs: Total {gflops:,} GFLOPs, Throughput {flop_throughput:,} GFLOP/s""")
+        
+    def print_summary(self, labels: list[str] = None, precision=2):
+        if labels is None:
+            self._print_totals(precision=precision)
+        else:
+            for label in labels:
+                self._print_single(label, self._counts[label], precision=precision)
+            
         
         
         
