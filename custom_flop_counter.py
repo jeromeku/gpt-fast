@@ -1,4 +1,5 @@
 # mypy: allow-untyped-defs
+import math
 from collections import defaultdict
 
 import torch
@@ -29,6 +30,35 @@ class PerformanceCounterMode(FlopCounterMode):
     def get_summary_data_counts(self):
         data_counts = self.get_data_counts()
         return {k: sum(v.values()) for k,v in data_counts.items()}
+    
+    def _nearest_power_of_10(self, x):
+        if x == 0:
+            return x, 0
+        
+        power = int(math.floor(math.log10(abs(x)) / 3))
+        scaled_value = x / (10 ** (3 * power))
+    
+        return scaled_value, power
+    
+    def pretty_summary_counts(self, type="flops", precision=2, depth=None):
+        assert type in ["flops", "data"]
+        metric_units = {0: '', 1: 'k', 2: 'M', 3: 'G', 4: 'T', 5: 'P', 6: 'E', 7: 'Z', 8: 'Y'}
+
+        if depth is None:
+            depth = self.depth
+        summary_counts = self.get_summary_flop_counts() if type == "flops" else self.get_summary_data_counts()
+        keys_to_print = [k for k in summary_counts.keys() if len(k.split(".")) <= depth]
+        units = "FLOPs" if type == "flops" else "B"
+        summary_str = []
+        for k in sorted(keys_to_print, key=lambda x: len(x.split("."))):
+            if k == "Global" or k is None:
+                continue
+            spaces = " " * (len(k.split(".")) - 1)
+            scaled_val, power = self._nearest_power_of_10(summary_counts[k])
+            formatted_val = f"{scaled_val:.{precision}f}{metric_units[power]}{units}"      
+            summary_str.append(f"{spaces}{k}: {formatted_val}")
+        
+        return "\n".join(summary_str)
     
     def _count_data_movement(self, func_packet, out, args, kwargs):
         arg_sizes = self._get_data_sizes(args)
@@ -63,3 +93,6 @@ if __name__ == "__main__":
 
     with PerformanceCounterMode(display=False, depth=10) as perf_counter:
         _ = model(input_ids)
+        
+    print(perf_counter.pretty_summary_counts(type="flops", depth=3))
+    print(perf_counter.pretty_summary_counts(type="data", depth=3))
