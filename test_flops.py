@@ -18,6 +18,7 @@ from parameterized import parameterized, parameterized_class
 from torch.utils.flop_counter import FlopCounterMode
 
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
+from performance_counter import PerformanceCounterMode
 from profiling_utils import (
     CudaFlopsTimer,
     FlopCounterManager,
@@ -363,4 +364,48 @@ def test_flop_counter_manager(shape, timer_cls):
     assert summary['total_time'] == expected_total_time
     assert abs(summary['token_throughput'] - expected_token_throughput) < 1e-1
     assert abs(summary['flop_throughput'] - expected_flops_throughput) < 1e-1
-    
+
+def get_leaf_nodes(count_keys, module_name):
+    return [k for k in count_keys if k.endswith(module_name)]
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_performance_counter():
+    from transformers import LlamaConfig, LlamaForCausalLM
+    small_config = {
+    "architectures": [
+        "LLaMAForCausalLM"
+    ],
+    "bos_token_id": 0,
+    "eos_token_id": 1,
+    "pad_token_id": 1,
+    "hidden_size": 128,
+    "intermediate_size": 352,
+    "max_sequence_length": 1024,
+    "model_type": "llama",
+    "num_attention_heads": 4,
+    "num_hidden_layers": 4,
+    "vocab_size": 32000,
+    }
+    dtype = torch.float16
+    model_config = LlamaConfig(**small_config)
+    model = LlamaForCausalLM(model_config).to(dtype).to("cuda")
+    print(next(model.parameters()).dtype)
+    batch_size, seqlen = (1, 1024)
+    input_ids = torch.randint(0, model_config.vocab_size, (batch_size, seqlen), device="cuda")
+    with PerformanceCounterMode(debug=True) as perf_counter:
+        _ = model(input_ids)
+    summary_flops = perf_counter.get_summary_flop_counts()
+    summary_data = perf_counter.get_summary_data_counts()
+    data_dict = perf_counter.get_data_counts()
+    assert len(summary_flops) == len(summary_data)
+    assert summary_flops.keys() == summary_data.keys()
+    q_proj_keys = get_leaf_nodes(summary_flops.keys(), "q_proj")
+    assert len(q_proj_keys) == model_config.num_hidden_layers
+    expected_flops = 2 * batch_size * seqlen * model_config.hidden_size * model_config.hidden_size
+    assert expected_flops == summary_flops[q_proj_keys[0]]
+    # Data movement = inputs + weights + outputs
+    element_size = dtype.itemsize
+    input_size = batch_size * seqlen * model_config.hidden_size * element_size 
+    weight_size = model_config.hidden_size * model_config.hidden_size * element_size 
+    output_size = batch_size * seqlen * model_config.hidden_size * element_size
+    expected_size = input_size + weight_size + output_size
+    assert expected_size == summary_data[q_proj_keys[0]]
