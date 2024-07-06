@@ -20,10 +20,10 @@ from torch.utils.flop_counter import FlopCounterMode
 from device_specs import AVAILABLE_GPU_SPECS, CUDADeviceSpec, get_chip_name
 from performance_counter import PerformanceCounterMode
 from profiling_utils import (
-    CudaFlopsTimer,
-    FlopCounterManager,
+    CUDAPerformanceTimer,
     FLOPMode,
-    FlopsTimer,
+    PerformanceCounterManager,
+    PerformanceTimer,
     SpeedOfLightStats,
     TransformerConfig,
     convert_to_nearest_power,
@@ -319,15 +319,15 @@ class TestSpeedOfLight(unittest.TestCase):
 
 # -------------------- Flop Counter Tests ------------------- #
 @pytest.mark.parametrize("shape", [(1, 1024, 4096, 4096), (128, 1, 1024, 4096)], ids=lambda p: ",".join(map(str, p)))
-@pytest.mark.parametrize("timer_cls", [FlopsTimer, CudaFlopsTimer], ids=lambda p: p.__name__)
-def test_flop_counter_manager(shape, timer_cls):
+@pytest.mark.parametrize("timer_cls", [PerformanceTimer, CUDAPerformanceTimer], ids=lambda p: p.__name__)
+def test_performance_counter_manager(shape, timer_cls):
     
     batch_size, query_len, in_features, out_features = shape
     num_tokens = batch_size * query_len
     a = torch.randn(num_tokens, in_features, dtype=torch.bfloat16, device="cuda")
     b = torch.randn(in_features, out_features, dtype=torch.bfloat16, device="cuda")
     
-    cm = FlopCounterManager(timer_cls=timer_cls)
+    cm = PerformanceCounterManager(timer_cls=timer_cls)
     start = time.perf_counter()
     with cm.count("a", num_tokens=num_tokens):
         _ = torch.matmul(a, b)
@@ -377,18 +377,18 @@ def test_flop_counter_manager(shape, timer_cls):
 def get_leaf_nodes(count_keys, module_name):
     return [k for k in count_keys if k.endswith(module_name)]
 
-def attn_proj_data_check(model_config, batch_size, seqlen, element_size):
+def attn_proj_io_check(model_config, batch_size, seqlen, element_size):
     input_size = batch_size * seqlen * model_config.hidden_size * element_size 
     weight_size = model_config.hidden_size * model_config.hidden_size * element_size 
     output_size = batch_size * seqlen * model_config.hidden_size * element_size
     return input_size + weight_size + output_size
-def attn_data_check(model_config, batch_size, seqlen, element_size):
+def attn_io_check(model_config, batch_size, seqlen, element_size):
     # queries, keys, values -> factor of 3
     input_size = (batch_size * seqlen * model_config.hidden_size * 3) * element_size
     output_size = (batch_size * seqlen * model_config.hidden_size) * element_size
     return input_size + output_size 
     
-def ffn_data_check(model_config, batch_size, seqlen, element_size, module_name):
+def ffn_io_check(model_config, batch_size, seqlen, element_size, module_name):
     assert module_name in ["up_proj", "gate_proj", "down_proj"]
 
     if module_name == "down_proj":
@@ -427,14 +427,14 @@ def test_performance_counter(num_hidden_layers, hidden_size, intermediate_size, 
     input_ids = torch.randint(0, model_config.vocab_size, (batch_size, seqlen), device="cuda")
     with torch.no_grad():
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
-            with PerformanceCounterMode(debug=True) as perf_counter:
+            with PerformanceCounterMode() as perf_counter:
                 _ = model(input_ids)
     summary_flops = perf_counter.get_summary_flop_counts()
-    summary_data = perf_counter.get_summary_data_counts()
+    summary_io = perf_counter.get_summary_io_counts()
     flops_by_op = perf_counter.get_flop_counts()
-    data_by_op = perf_counter.get_data_counts()
-    assert len(summary_flops) == len(summary_data)
-    assert summary_flops.keys() == summary_data.keys()
+    io_by_op = perf_counter.get_io_counts()
+    assert len(summary_flops) == len(summary_io)
+    assert summary_flops.keys() == summary_io.keys()
 
     # Attn Projections
     for k in ["q_proj", "k_proj", "v_proj"]:
@@ -444,25 +444,25 @@ def test_performance_counter(num_hidden_layers, hidden_size, intermediate_size, 
         expected_flops = 2 * batch_size * seqlen * model_config.hidden_size * model_config.hidden_size
         assert expected_flops == summary_flops[proj_keys[0]]
         
-        # Data movement check
-        expected_size = attn_proj_data_check(model_config, batch_size, seqlen, element_size)
-        assert expected_size == summary_data[proj_keys[0]]
+        # io movement check
+        expected_size = attn_proj_io_check(model_config, batch_size, seqlen, element_size)
+        assert expected_size == summary_io[proj_keys[0]]
 
     # Attention
     attention_keys = get_leaf_nodes(summary_flops.keys(), "self_attn")
     for k in attention_keys:
         flops = flops_by_op[k]
-        data_movement = data_by_op[k]
+        io_movement = io_by_op[k]
         for op, count in flops.items():
             if "attention" in op.__name__: 
                 expected_flops = 2 * 2 * batch_size * seqlen * seqlen * model_config.hidden_size
                 assert expected_flops == count
-        for op, count in data_movement.items():
+        for op, count in io_movement.items():
             if "attention" in op.__name__:
                 # Check approx equal due to other small artifacts returned by sdpa.mem_efficient_attention
                 # See #https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/transformers/cuda/attention.cu#L867
                 # Check within 100 bytes
-                expected_size = attn_data_check(model_config, batch_size, seqlen, element_size)
+                expected_size = attn_io_check(model_config, batch_size, seqlen, element_size)
                 assert abs(expected_size - count) < 100
     # FFN
     for k in ["up_proj", "gate_proj", "down_proj"]:
@@ -471,6 +471,6 @@ def test_performance_counter(num_hidden_layers, hidden_size, intermediate_size, 
         expected_flops = 2 * batch_size * seqlen * model_config.hidden_size * model_config.intermediate_size
         assert expected_flops == summary_flops[proj_keys[0]]
         
-        # Data movement check
-        expected_size = ffn_data_check(model_config, batch_size, seqlen, element_size, k)
-        assert expected_size == summary_data[proj_keys[0]]
+        # io movement check
+        expected_size = ffn_io_check(model_config, batch_size, seqlen, element_size, k)
+        assert expected_size == summary_io[proj_keys[0]]

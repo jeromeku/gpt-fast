@@ -12,11 +12,11 @@ from functools import partial
 from typing import Optional
 
 import torch
-from torch.utils.flop_counter import FlopCounterMode
 
 from device_specs import (
     DeviceSpec,
 )
+from performance_counter import PerformanceCounterMode
 
 logger = logging.getLogger(__name__)
 
@@ -385,17 +385,17 @@ class SpeedOfLightStats:
     def __str__(self):
         return f"{self.device_spec} {self.model_config}"
 
-class FlopsTimer:
+class PerformanceTimer:
     def __init__(self, name, precision=1, display=False, depth=10):
         self.name = name
         self.precision = precision
         self.display = display 
         self.depth = depth
-        self.flop_counter = FlopCounterMode(display=display, depth=depth)
+        self.perf_counter = PerformanceCounterMode(display=display, depth=depth)
         
     def __enter__(self):
         self.start = time.perf_counter()
-        self.flop_counter.__enter__()
+        self.perf_counter.__enter__()
         return self
 
     def _print_exit_msg(self):
@@ -408,30 +408,33 @@ class FlopsTimer:
         self.end = time.perf_counter()
         #Convert to ms
         self.elapsed = (self.end - self.start)
-        self.flop_counter.__exit__(type, value, traceback)
+        self.perf_counter.__exit__(type, value, traceback)
         if self.display:
             self._print_exit_msg()        
 
     @property
     def total_flops(self):
-        return self.flop_counter.get_total_flops()
+        return self.perf_counter.get_total_flops()
     
     @property
+    def total_io(self):
+        return self.perf_counter.get_total_io()
+    @property
     def flops_table(self):
-        return self.flop_counter.get_table()
+        return self.perf_counter.get_table()
     
     @property
     def flop_counts(self):
-        return self.flop_counter.get_flop_counts()
+        return self.perf_counter.get_flop_counts()
     
-class CudaFlopsTimer(FlopsTimer):
+class CUDAPerformanceTimer(PerformanceTimer):
         
     def __enter__(self):
         self.start = torch.cuda.Event(enable_timing=True)
         self.end = torch.cuda.Event(enable_timing=True)
         self.start.record()
-        self.flop_counter = FlopCounterMode(display=self.display, depth=self.depth)
-        self.flop_counter.__enter__()
+        self.perf_counter = PerformanceCounterMode(display=self.display, depth=self.depth)
+        self.perf_counter.__enter__()
         return self
 
     def __exit__(self, type, value, traceback):
@@ -439,14 +442,14 @@ class CudaFlopsTimer(FlopsTimer):
         torch.cuda.synchronize()
         # Convert from ms to s
         self.elapsed = self.start.elapsed_time(self.end) * 1e-3
-        self.flop_counter.__exit__(type, value, traceback)
+        self.perf_counter.__exit__(type, value, traceback)
 
         if self.display:
             self._print_exit_msg()        
 
-class FlopCounterManager:
+class PerformanceCounterManager:
     COUNT_KEYS = ["label", "num_tokens", "elapsed", "throughput", "total_flops", "flops_table", "flop_counts"]
-    def __init__(self, depth=10, timer_cls=FlopsTimer, display=False, precision=2):
+    def __init__(self, depth=10, timer_cls=PerformanceTimer, display=False):
         super().__init__()
         self._counts = {}
         self._depth = depth
@@ -455,19 +458,21 @@ class FlopCounterManager:
 
     @contextmanager
     def count(self, label: str, num_tokens: int):
-        flop_timer = self.timer_cls(name=label, depth=self._depth, display=self.display)
-        flop_timer.__enter__()
+        perf_timer = self.timer_cls(name=label, depth=self._depth, display=self.display)
+        perf_timer.__enter__()
         try:
             yield self
         finally:
-            flop_timer.__exit__(None, None, None)
+            perf_timer.__exit__(None, None, None)
             self._counts[label] = {"label": label,
                                   "num_tokens": num_tokens,
-                                  "elapsed": flop_timer.elapsed,
-                                  "throughput": num_tokens / flop_timer.elapsed,
-                                  "total_flops": flop_timer.total_flops, 
-                                  "flops_table": flop_timer.flops_table, 
-                                  "flop_counts": flop_timer.flop_counts}
+                                  "elapsed": perf_timer.elapsed,
+                                  "throughput": num_tokens / perf_timer.elapsed,
+                                  "total_flops": perf_timer.total_flops, 
+                                  "total_io": perf_timer.total_io,
+                                #   "flops_table": perf_timer.flops_table, 
+                                  "flop_counts": perf_timer.flop_counts,
+                                  "io_counts": perf_timer.io_counts}
     @property
     def counts(self):
         return self._counts
@@ -507,10 +512,10 @@ class FlopCounterManager:
               Elapsed = {ms:,} ms
               Tokens:
                 Total {counts['num_tokens']}
-                Throughput = {token_throughput} tokens/s
+                Throughput {token_throughput} tokens/s
               FLOPs: 
                 Total {gflops:,} GFLOPs, 
-                Throughput = {flop_throughput:,} GFLOP/s""")
+                Throughput {flop_throughput:,} GFLOP/s""")
         return text
     
     def get_summary(self):

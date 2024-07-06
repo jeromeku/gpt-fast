@@ -11,13 +11,13 @@ aten = torch.ops.aten
 class PerformanceCounterMode(FlopCounterMode):
     def __init__(self, display=False, depth=10, debug=False):
         self.debug = debug
-        self.data_counts = defaultdict(lambda: defaultdict(int))
+        self.io_counts = defaultdict(lambda: defaultdict(int))
         super().__init__(display=display, depth=depth)
     
-    def get_data_counts(self):
-        return {k: dict(v) for k,v in self.data_counts.items()}
+    def get_io_counts(self):
+        return {k: dict(v) for k,v in self.io_counts.items()}
     
-    def _get_data_sizes(self, args):
+    def _get_io_sizes(self, args):
         sizes = tree_map(lambda x: x.numel() * x.element_size() if isinstance(x, torch.Tensor) else 0, args)
         if not hasattr(sizes, "__len__"):
             sizes = [sizes]
@@ -27,9 +27,9 @@ class PerformanceCounterMode(FlopCounterMode):
         flop_counts = self.get_flop_counts()
         return {k: sum(v.values()) for k,v in flop_counts.items()}
     
-    def get_summary_data_counts(self):
-        data_counts = self.get_data_counts()
-        return {k: sum(v.values()) for k,v in data_counts.items()}
+    def get_summary_io_counts(self):
+        io_counts = self.get_io_counts()
+        return {k: sum(v.values()) for k,v in io_counts.items()}
     
     def _nearest_power_of_10(self, x):
         if x == 0:
@@ -41,12 +41,12 @@ class PerformanceCounterMode(FlopCounterMode):
         return scaled_value, power
     
     def pretty_summary_counts(self, type="flops", precision=2, depth=None):
-        assert type in ["flops", "data"]
+        assert type in ["flops", "io"]
         metric_units = {0: '', 1: 'k', 2: 'M', 3: 'G', 4: 'T', 5: 'P', 6: 'E', 7: 'Z', 8: 'Y'}
 
         if depth is None:
             depth = self.depth
-        summary_counts = self.get_summary_flop_counts() if type == "flops" else self.get_summary_data_counts()
+        summary_counts = self.get_summary_flop_counts() if type == "flops" else self.get_summary_io_counts()
         keys_to_print = [k for k in summary_counts.keys() if len(k.split(".")) <= depth]
         units = "FLOPs" if type == "flops" else "B"
         summary_str = []
@@ -60,10 +60,10 @@ class PerformanceCounterMode(FlopCounterMode):
         
         return "\n".join(summary_str)
     
-    def _count_data_movement(self, func_packet, out, args, kwargs):
-        arg_sizes = self._get_data_sizes(args)
-        kwargs_sizes = self._get_data_sizes(kwargs.values())
-        out_sizes = self._get_data_sizes(out)
+    def _count_io(self, func_packet, out, args, kwargs):
+        arg_sizes = self._get_io_sizes(args)
+        kwargs_sizes = self._get_io_sizes(kwargs.values())
+        out_sizes = self._get_io_sizes(out)
         if "attention" in func_packet.__name__:
             print(f"attention out sizes: {len(out)} {out_sizes}")
         arg_size, kwargs_size, out_size = sum(arg_sizes), sum(kwargs_sizes), sum(out_sizes)
@@ -73,7 +73,7 @@ class PerformanceCounterMode(FlopCounterMode):
         if func_packet in self.flop_registry:
             flop_count_func = self.flop_registry[func_packet]
             flop_count = flop_count_func(*args, **kwargs, out_val=out)  # type: ignore[operator]
-            arg_size, kwarg_size, out_size = self._count_data_movement(func_packet, out, args, kwargs)
+            arg_size, kwarg_size, out_size = self._count_io(func_packet, out, args, kwargs)
             total_size = arg_size + kwarg_size + out_size
 
             for par in set(self.mod_tracker.parents):
@@ -81,7 +81,7 @@ class PerformanceCounterMode(FlopCounterMode):
                     print(f"Counting flops for {par}, {func_packet}: {flop_count}")
                     print(f"Counting memory counts for {par}, {func_packet}: {sum([arg_size, kwarg_size, out_size])} = {arg_size} + {kwarg_size} + {out_size}")
                 self.flop_counts[par][func_packet] += flop_count
-                self.data_counts[par][func_packet] += total_size
+                self.io_counts[par][func_packet] += total_size
         
         return out
 
@@ -97,4 +97,4 @@ if __name__ == "__main__":
         _ = model(input_ids)
         
     print(perf_counter.pretty_summary_counts(type="flops", depth=3))
-    print(perf_counter.pretty_summary_counts(type="data", depth=3))
+    print(perf_counter.pretty_summary_counts(type="io", depth=3))
