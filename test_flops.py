@@ -348,7 +348,7 @@ def test_performance_counter_manager(shape, timer_cls):
         _ = torch.matmul(a, b)
     end = time.perf_counter()
     elapsed = end - start 
-    
+    cm.print_summary(labels=["a", "b"], verbose=True)
     assert "a" in cm.counts
     assert "b" in cm.counts
     counts = cm.counts
@@ -370,7 +370,7 @@ def test_performance_counter_manager(shape, timer_cls):
     assert summary['total_time'] == expected_total_time
     assert abs(summary['token_throughput'] - expected_token_throughput) < 1e-1
     assert abs(summary['flop_throughput'] - expected_flops_throughput) < 1e-1
-
+    cm.print_summary()
 # -------------------- Performance Counter Tests ------------------- #
 
 def get_leaf_nodes(count_keys, module_name):

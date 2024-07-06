@@ -37,6 +37,18 @@ def convert_to_nearest_power(n: float, base=1e9, num_decimals=2):
     p = math.pow(base, nearest_power)
     return round(n / p, num_decimals)
 
+METRIC_UNITS = {0: '', 1: 'k', 2: 'M', 3: 'G', 4: 'T', 5: 'P', 6: 'E', 7: 'Z', 8: 'Y'}
+
+def _nearest_power_of_10(x):
+    if x == 0:
+        return x, 0
+    
+    power = int(math.floor(math.log10(abs(x)) / 3))
+    scaled_value = x / (10 ** (3 * power))
+
+    return scaled_value, power
+    
+
 def get_all_base_classes(object):
     return [cls.__name__.lower() for cls in inspect.getmro(object.__class__)]
 
@@ -419,9 +431,16 @@ class PerformanceTimer:
     @property
     def total_io(self):
         return self.perf_counter.get_total_io()
+    
     @property
     def flops_table(self):
         return self.perf_counter.get_table()
+    
+    def get_summary_flop_counts(self):
+        return self.perf_counter.get_summary_flop_counts()
+    
+    def get_summary_io_counts(self):
+        return self.perf_counter.get_summary_io_counts()
     
     @property
     def flop_counts(self):
@@ -431,6 +450,8 @@ class PerformanceTimer:
     def io_counts(self):
         return self.perf_counter.get_io_counts()
     
+    def get_pretty_summary(self, depth):
+        return self.perf_counter.pretty_summary_counts(depth=depth if depth is not None else self.depth)
 class CUDAPerformanceTimer(PerformanceTimer):
         
     def __enter__(self):
@@ -476,8 +497,9 @@ class PerformanceCounterManager:
                                   "total_io": perf_timer.total_io,
                                   "summary_flops": perf_timer.get_summary_flop_counts(),
                                   "summary_io": perf_timer.get_summary_io_counts(),
-                                  "flop_counts": perf_timer.get_flop_counts(),
-                                  "io_counts": perf_timer.get_io_counts(),
+                                  "flop_counts": perf_timer.flop_counts,
+                                  "io_counts": perf_timer.io_counts,
+                                  "pretty_summary": perf_timer.get_pretty_summary(depth=self._depth),
                                   }
     @property
     def counts(self):
@@ -510,28 +532,7 @@ class PerformanceCounterManager:
     def to_json(self):
         # Need to convert flop_counts from OpOverloadPackets to str in order to serialize
         return json.dumps(self.to_dict(), indent=2)
-    
-    def _print_single(self, label, counts, precision):
-        ms = round(counts['elapsed'] * 1e3, precision)
-        token_throughput = round(counts['throughput'], precision)
-        gflops = round(counts['total_flops'] / 1e9, precision)
-        gb = round(counts['total_io'] / 1e9, precision)
-        flop_throughput = round(gflops / counts['elapsed'], precision)
-        io_throughput = round(gb / counts['elapsed'], precision)
-        text = textwrap.dedent(f"""\
-            {label.title()}:
-              Elapsed = {ms:,} ms
-              Tokens:
-                Total {counts['num_tokens']}
-                Throughput {token_throughput} tokens/s
-              IO:
-                Total {gb:,} GB
-                Throughput {io_throughput} GB/s
-              FLOPs: 
-                Total {gflops:,} GFLOPs, 
-                Throughput {flop_throughput:,} GFLOP/s""")
-        return text
-    
+       
     def get_summary(self):
         token_throughput = self.total_tokens / self.total_time
         io_throughput = self.total_io / self.total_time
@@ -546,7 +547,31 @@ class PerformanceCounterManager:
                  "flop_throughput": flop_throughput
                 }
     
-    def _print_totals(self, precision=2):
+    def _format_single(self, label, counts, precision, verbose=True):
+        ms = round(counts['elapsed'] * 1e3, precision)
+        token_throughput = round(counts['throughput'], precision)
+        gflops = round(counts['total_flops'] / 1e9, precision)
+        gb = round(counts['total_io'] / 1e9, precision)
+        flop_throughput = round(gflops / counts['elapsed'], precision)
+        io_throughput = round(gb / counts['elapsed'], precision)
+        counts_by_module = counts['pretty_summary']
+        text = textwrap.dedent(f"""\
+            {label.title()}:
+              Elapsed = {ms:,} ms
+              Tokens:
+                Total {counts['num_tokens']}
+                Throughput {token_throughput} tokens/s
+              IO:
+                Total {gb:,} GB
+                Throughput {io_throughput} GB/s
+              FLOPs: 
+                Total {gflops:,} GFLOPs, 
+                Throughput {flop_throughput:,} GFLOP/s
+            {counts_by_module if verbose else ''}""")
+        
+        return text
+    
+    def _format_totals(self, precision=2):
         ms = round(self.total_time * 1e3, precision)
         token_throughput = round(self.total_tokens / self.total_time, precision)
         gflops = round(self.total_flops / 1e9, precision)
@@ -567,12 +592,12 @@ class PerformanceCounterManager:
                 Throughput {flop_throughput:,} GFLOP/s""")
         return text
       
-    def print_summary(self, labels: list[str] = None, precision=2):
+    def print_summary(self, labels: list[str] = None, precision=2, verbose=False):
         _print = partial(print, flush=True, end='\n')
         if labels is None:
-            text = self._print_totals(precision=precision)
+            text = self._format_totals(precision=precision)
             _print(text)
         else:
             for label in labels:
-                text = self._print_single(label, self._counts[label], precision=precision)
+                text = self._format_single(label, self._counts[label], precision=precision, verbose=verbose)
                 _print(text)
