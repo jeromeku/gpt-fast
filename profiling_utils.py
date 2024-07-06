@@ -474,9 +474,11 @@ class PerformanceCounterManager:
                                   "throughput": num_tokens / perf_timer.elapsed,
                                   "total_flops": perf_timer.total_flops, 
                                   "total_io": perf_timer.total_io,
-                                #   "flops_table": perf_timer.flops_table, 
-                                  "flop_counts": perf_timer.flop_counts,
-                                  "io_counts": perf_timer.io_counts}
+                                  "summary_flops": perf_timer.get_summary_flop_counts(),
+                                  "summary_io": perf_timer.get_summary_io_counts(),
+                                  "flop_counts": perf_timer.get_flop_counts(),
+                                  "io_counts": perf_timer.get_io_counts(),
+                                  }
     @property
     def counts(self):
         return self._counts
@@ -487,6 +489,9 @@ class PerformanceCounterManager:
     def total_flops(self):
         return sum(count["total_flops"] for count in self._counts.values())
     
+    @property
+    def total_io(self):
+        return sum(count["total_io"] for count in self._counts.values())
     @property
     def total_tokens(self):
         return sum(count["num_tokens"] for count in self._counts.values())
@@ -510,13 +515,18 @@ class PerformanceCounterManager:
         ms = round(counts['elapsed'] * 1e3, precision)
         token_throughput = round(counts['throughput'], precision)
         gflops = round(counts['total_flops'] / 1e9, precision)
+        gb = round(counts['total_io'] / 1e9, precision)
         flop_throughput = round(gflops / counts['elapsed'], precision)
+        io_throughput = round(gb / counts['elapsed'], precision)
         text = textwrap.dedent(f"""\
             {label.title()}:
               Elapsed = {ms:,} ms
               Tokens:
                 Total {counts['num_tokens']}
                 Throughput {token_throughput} tokens/s
+              IO:
+                Total {gb:,} GB
+                Throughput {io_throughput} GB/s
               FLOPs: 
                 Total {gflops:,} GFLOPs, 
                 Throughput {flop_throughput:,} GFLOP/s""")
@@ -524,12 +534,15 @@ class PerformanceCounterManager:
     
     def get_summary(self):
         token_throughput = self.total_tokens / self.total_time
+        io_throughput = self.total_io / self.total_time
         flop_throughput = self.total_flops / self.total_time
         return { 
                  "total_tokens": self.total_tokens,
                  "total_time": self.total_time,
                  "total_flops": self.total_flops,
+                 "total_io": self.total_io,
                  "token_throughput": token_throughput,
+                 "io_throughput": io_throughput,
                  "flop_throughput": flop_throughput
                 }
     
@@ -537,14 +550,18 @@ class PerformanceCounterManager:
         ms = round(self.total_time * 1e3, precision)
         token_throughput = round(self.total_tokens / self.total_time, precision)
         gflops = round(self.total_flops / 1e9, precision)
+        gb = round(self.total_io / 1e9, precision)
         flop_throughput = round(gflops / self.total_time, precision)
-        
+        io_throughput = round(gb / self.total_time, precision)
         text = textwrap.dedent(f"""\
             FlopCounter Summary:
               Total time = {ms:,} ms
               Tokens:
                 Total {self.total_tokens}
-                Throughput {token_throughput} tokens/s
+                Throughput {token_throughput:,} tokens/s
+              IO:
+                Total {gb:,} GB
+                Throughput {io_throughput:,} GB/s
               FLOPs:
                 Total {gflops:,} GFLOPs
                 Throughput {flop_throughput:,} GFLOP/s""")
