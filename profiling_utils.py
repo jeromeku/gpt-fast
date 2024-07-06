@@ -474,16 +474,16 @@ class CUDAPerformanceTimer(PerformanceTimer):
 
 class PerformanceCounterManager:
     COUNT_KEYS = ["label", "num_tokens", "elapsed", "throughput", "total_flops", "flops_table", "flop_counts"]
-    def __init__(self, depth=10, timer_cls=PerformanceTimer, display=False):
+    def __init__(self, depth=10, timer_cls=PerformanceTimer, verbose=False):
         super().__init__()
         self._counts = {}
         self._depth = depth
         self.timer_cls = timer_cls
-        self.display = display
+        self.verbose = verbose
 
     @contextmanager
     def count(self, label: str, num_tokens: int):
-        perf_timer = self.timer_cls(name=label, depth=self._depth, display=self.display)
+        perf_timer = self.timer_cls(name=label, depth=self._depth)
         perf_timer.__enter__()
         try:
             yield self
@@ -524,13 +524,14 @@ class PerformanceCounterManager:
     
     def to_dict(self):
         # Convert flop_counts from OpOverloadPackets to str
-        flop_counts = deepcopy(self._counts)
-        for label, counts in flop_counts.items():
-            flop_counts[label]['flop_counts'] = {mod: {str(op): count for op, count in op_count.items()} for mod, op_count in counts['flop_counts'].items()}
-        return flop_counts
+        counts = deepcopy(self._counts)
+        for label,label_counts in counts.items():
+            counts[label]['flop_counts'] = {mod: {str(op): count for op, count in op_count.items()} for mod, op_count in label_counts['flop_counts'].items()}
+            counts[label]['io_counts'] = {mod: {str(op): count for op, count in op_count.items()} for mod, op_count in label_counts['io_counts'].items()}
+
+        return counts
     
     def to_json(self):
-        # Need to convert flop_counts from OpOverloadPackets to str in order to serialize
         return json.dumps(self.to_dict(), indent=2)
        
     def get_summary(self):
@@ -547,14 +548,13 @@ class PerformanceCounterManager:
                  "flop_throughput": flop_throughput
                 }
     
-    def _format_single(self, label, counts, precision, verbose=True):
+    def _format_single(self, label, counts, precision, verbose=False):
         ms = round(counts['elapsed'] * 1e3, precision)
         token_throughput = round(counts['throughput'], precision)
         gflops = round(counts['total_flops'] / 1e9, precision)
         gb = round(counts['total_io'] / 1e9, precision)
         flop_throughput = round(gflops / counts['elapsed'], precision)
         io_throughput = round(gb / counts['elapsed'], precision)
-        counts_by_module = counts['pretty_summary']
         text = textwrap.dedent(f"""\
             {label.title()}:
               Elapsed = {ms:,} ms
@@ -566,8 +566,10 @@ class PerformanceCounterManager:
                 Throughput {io_throughput} GB/s
               FLOPs: 
                 Total {gflops:,} GFLOPs, 
-                Throughput {flop_throughput:,} GFLOP/s
-            {counts_by_module if verbose else ''}""")
+                Throughput {flop_throughput:,} GFLOP/s""")
+        if verbose:
+            counts_by_module = counts['pretty_summary']
+            text += textwrap.dedent(f"""\nCounts by Module:\n{counts_by_module}""")
         
         return text
     
@@ -592,7 +594,8 @@ class PerformanceCounterManager:
                 Throughput {flop_throughput:,} GFLOP/s""")
         return text
       
-    def print_summary(self, labels: list[str] = None, precision=2, verbose=False):
+    def print_summary(self, labels: list[str] = None, precision=2, verbose=None):
+        verbose = verbose if verbose is not None else self.verbose
         _print = partial(print, flush=True, end='\n')
         if labels is None:
             text = self._format_totals(precision=precision)

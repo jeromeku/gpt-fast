@@ -16,8 +16,8 @@ from torch.nn.attention import SDPBackend
 import profiling_utils
 from device_specs import CUDADeviceSpec
 from profiling_utils import (
-    FlopCounterManager,
     FLOPMode,
+    PerformanceCounterManager,
     SpeedOfLightStats,
     TransformerConfig,
     total_model_params,
@@ -27,7 +27,7 @@ NUM_PARAMS = None
 MODEL_CFG: TransformerConfig
 DEVICE_SPEC: CUDADeviceSpec
 SOL: SpeedOfLightStats
-FLOPCOUNTER: FlopCounterManager = FlopCounterManager(depth=2)
+PERF_COUNTER: PerformanceCounterManager = PerformanceCounterManager(depth=3, verbose=True)
 
 def device_sync(device):
     if "cuda" in device:
@@ -77,10 +77,10 @@ def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **samp
     num_tokens = input_pos.numel()
     assert num_tokens == seqlen
     
-    with FLOPCOUNTER.count("prefill", num_tokens=num_tokens):
+    with PERF_COUNTER.count("prefill", num_tokens=num_tokens):
         logits = model(x, input_pos)
         next_token = sample(logits, **sampling_kwargs)[0]
-    FLOPCOUNTER.print_summary(labels=['prefill'])
+    PERF_COUNTER.print_summary(labels=['prefill'])
     
     flops_per_token = MODEL_CFG.flops_per_token(context_len=seqlen, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
@@ -98,10 +98,10 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     assert num_tokens == 1
 
     step_name = "decode-" + str(context_len) + "-" + str(num_tokens)
-    with FLOPCOUNTER.count(step_name, num_tokens=num_tokens):
+    with PERF_COUNTER.count(step_name, num_tokens=num_tokens):
         logits = model(x, input_pos)
         next_token = sample(logits, **sampling_kwargs)
-    FLOPCOUNTER.print_summary(labels=[step_name])
+    PERF_COUNTER.print_summary(labels=[step_name])
 
     flops_per_token = MODEL_CFG.flops_per_token(context_len=context_len, mode=FLOPMode.FORWARD)
     mem_lat_ms = SOL.memory_latency(unit="ms")
@@ -192,7 +192,7 @@ B_INST, E_INST = "[INST]", "[/INST]"
 def main(
     prompt: str = "Hello, my name is",
     num_samples: int = 1,
-    max_new_tokens: int = 5,
+    max_new_tokens: int = 2,
     top_k: int = 200,
     temperature: float = 0.8,
     checkpoint_path: Path = Path("/home/ubuntu/gpt-fast-dev/checkpoints/7B/model.pth"),
@@ -281,9 +281,9 @@ def main(
 
     print(f"Average tokens/sec: {torch.mean(torch.tensor(aggregate_metrics['tokens_per_sec'])).item():.2f}")
     print(f"Memory used: {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
-    FLOPCOUNTER.print_summary()
+    PERF_COUNTER.print_summary()
     with open("flop_counts.json", "w") as f:
-        f.write(FLOPCOUNTER.to_json())
+        f.write(PERF_COUNTER.to_json())
 
 if __name__ == "__main__":
     main()
