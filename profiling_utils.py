@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from typing import Optional
 
 import torch
@@ -504,9 +505,12 @@ class FlopCounterManager:
         text = textwrap.dedent(f"""\
             {label.title()}:
               Elapsed = {ms:,} ms
-              Tokens: Total {counts['num_tokens']}, Throughput = {token_throughput} tokens/s
-              FLOPs: Total {gflops:,} GFLOPs, Throughput = {flop_throughput:,} GFLOP/s""")
-        print(text)
+              Tokens:
+                Total {counts['num_tokens']}
+                Throughput = {token_throughput} tokens/s
+              FLOPs: 
+                Total {gflops:,} GFLOPs, 
+                Throughput = {flop_throughput:,} GFLOP/s""")
         return text
     
     def get_summary(self):
@@ -529,14 +533,20 @@ class FlopCounterManager:
         text = textwrap.dedent(f"""\
             FlopCounter Summary:
               Total time = {ms:,} ms
-              Tokens: Total {self.total_tokens}, Throughput {token_throughput} tokens/s
-              FLOPs: Total {gflops:,} GFLOPs, Throughput {flop_throughput:,} GFLOP/s""")
-        print(text)
+              Tokens:
+                Total {self.total_tokens}
+                Throughput {token_throughput} tokens/s
+              FLOPs:
+                Total {gflops:,} GFLOPs
+                Throughput {flop_throughput:,} GFLOP/s""")
         return text
       
     def print_summary(self, labels: list[str] = None, precision=2):
+        _print = partial(print, flush=True, end='\n')
         if labels is None:
-            self._print_totals(precision=precision)
+            text = self._print_totals(precision=precision)
+            _print(text)
         else:
             for label in labels:
-                self._print_single(label, self._counts[label], precision=precision)
+                text = self._print_single(label, self._counts[label], precision=precision)
+                _print(text)

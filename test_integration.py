@@ -3,8 +3,6 @@
 
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-import itertools
-import json
 import sys
 import time
 from pathlib import Path
@@ -20,7 +18,6 @@ from device_specs import CUDADeviceSpec
 from profiling_utils import (
     FlopCounterManager,
     FLOPMode,
-    FlopsTimer,
     SpeedOfLightStats,
     TransformerConfig,
     total_model_params,
@@ -77,23 +74,20 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 def prefill(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     # input_pos: [B, S]
     seqlen = input_pos.shape[-1]
-    # seqlen = len(input_pos.reshape(-1))
     num_tokens = input_pos.numel()
     assert num_tokens == seqlen
     
     with FLOPCOUNTER.count("prefill", num_tokens=num_tokens):
         logits = model(x, input_pos)
         next_token = sample(logits, **sampling_kwargs)[0]
-
-    # with open("prefill.txt", "w") as f:
-    #     print(FLOPCOUNTER.counts["prefill"], file=f)
     FLOPCOUNTER.print_summary(labels=['prefill'])
+    
     flops_per_token = MODEL_CFG.flops_per_token(context_len=seqlen, mode=FLOPMode.FORWARD)
     flops_total = flops_per_token * num_tokens
     mem_lat_ms = SOL.memory_latency(unit="ms")
     compute_lat_ms = SOL.compute_latency(context_len=seqlen, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
-    print(f"Flop Check, prefill: {round(flops_total / 1e9, 1)}GFLOPs")    
-    print(f"Memory Latency: {round(mem_lat_ms, 3)}ms, Compute Latency: {round(compute_lat_ms, 3)}ms")
+    print(f"Flop Check, prefill: {round(flops_total / 1e9, 1)}GFLOPs", flush=True, end="\n")    
+    print(f"Memory Latency: {round(mem_lat_ms, 3)}ms, Compute Latency: {round(compute_lat_ms, 3)}ms", flush=True, end="\n")
     
     return next_token
 def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -107,15 +101,14 @@ def decode_one_token(model: Transformer, x: torch.Tensor, input_pos: torch.Tenso
     with FLOPCOUNTER.count(step_name, num_tokens=num_tokens):
         logits = model(x, input_pos)
         next_token = sample(logits, **sampling_kwargs)
-    # with open(f"{step_name}.txt", "w") as f:
     FLOPCOUNTER.print_summary(labels=[step_name])
 
     flops_per_token = MODEL_CFG.flops_per_token(context_len=context_len, mode=FLOPMode.FORWARD)
     mem_lat_ms = SOL.memory_latency(unit="ms")
     compute_lat_ms = SOL.compute_latency(context_len=context_len, num_tokens=num_tokens, mode=FLOPMode.FORWARD, unit="ms")
 
-    print(f"FLOPS decode {num_tokens} token with context {context_len}: {round(flops_per_token * num_tokens / 1e9, 1)}GFLOPs")
-    print(f"Memory Latency: {round(mem_lat_ms, 2)}ms, Compute Latency: {round(compute_lat_ms, 2)}ms")
+    print(f"FLOPS decode {num_tokens} token with context {context_len}: {round(flops_per_token * num_tokens / 1e9, 1)}GFLOPs", flush=True, end="\n")
+    print(f"Memory Latency: {round(mem_lat_ms, 2)}ms, Compute Latency: {round(compute_lat_ms, 2)}ms", flush=True, end="\n")
     
     return next_token
 
@@ -144,9 +137,6 @@ def generate(
     prompt: torch.Tensor,
     max_new_tokens: int,
     *,
-    interactive: bool = False,
-    draft_model: Transformer = None,
-    speculate_k: Optional[int] = 8,
     callback = lambda x: x,
     **sampling_kwargs
 ) -> torch.Tensor:
@@ -172,15 +162,11 @@ def generate(
     seq[T] = next_token
 
     input_pos = torch.tensor([T], device=device, dtype=torch.int)
-    accept_counts = [0] * (speculate_k + 1)
 
     generated_tokens, _ = decode_n_tokens(model, next_token.view(1, -1), input_pos, max_new_tokens - 1, callback=callback, **sampling_kwargs)
     seq[T + 1:] = torch.cat(generated_tokens)
 
-    generate_stats = {
-        'accept_counts': accept_counts
-    }
-    return seq, generate_stats
+    return seq
 
 def encode_tokens(tokenizer, string, bos=True, device=default_device):
     tokens = tokenizer.encode(string)
@@ -188,7 +174,7 @@ def encode_tokens(tokenizer, string, bos=True, device=default_device):
         tokens = [tokenizer.bos_id()] + tokens
     return torch.tensor(tokens, dtype=torch.int, device=device)
 
-def _load_model(checkpoint_path, device, precision, use_tp, use_cuda=True):
+def _load_model(checkpoint_path, device, precision):
     
     with torch.device('meta'):
         model = Transformer.from_name(checkpoint_path.parent.name)
@@ -206,11 +192,11 @@ B_INST, E_INST = "[INST]", "[/INST]"
 def main(
     prompt: str = "Hello, my name is",
     num_samples: int = 1,
-    max_new_tokens: int = 100,
+    max_new_tokens: int = 5,
     top_k: int = 200,
     temperature: float = 0.8,
-    checkpoint_path: Path = Path("checkpoints/meta-Transformer/Transformer-2-7b-chat-hf/model.pth"),
-    device=0,
+    checkpoint_path: Path = Path("/home/ubuntu/gpt-fast-dev/checkpoints/7B/model.pth"),
+    device="cuda",
     precision=torch.bfloat16
 ) -> None:
     """Generates text samples based on a pre-trained Transformer model and tokenizer.
@@ -222,7 +208,7 @@ def main(
 
     print("Loading model ...")
     t0 = time.time()
-    model = _load_model(checkpoint_path, device, precision, False)
+    model = _load_model(checkpoint_path, device, precision)
     
     global DEVICE_SPEC
     DEVICE_SPEC = CUDADeviceSpec(dtype=precision)
@@ -266,7 +252,6 @@ def main(
 
     aggregate_metrics = {
         'tokens_per_sec': [],
-        'accept_counts': [],
     }
     
     start = 0
@@ -274,15 +259,14 @@ def main(
     for i in range(start, num_samples):
         t0 = time.perf_counter()
         
-        y, metrics = generate(
+        y = generate(
             model,
             encoded,
             max_new_tokens,
             temperature=temperature,
             top_k=top_k,
         )
-        aggregate_metrics['accept_counts'].append(metrics['accept_counts'])
-        
+                
         t = time.perf_counter() - t0
 
         print(tokenizer.decode(y.tolist()))
@@ -301,3 +285,5 @@ def main(
     with open("flop_counts.json", "w") as f:
         f.write(FLOPCOUNTER.to_json())
 
+if __name__ == "__main__":
+    main()
