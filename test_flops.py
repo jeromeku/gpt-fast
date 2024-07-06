@@ -316,7 +316,8 @@ class TestSpeedOfLight(unittest.TestCase):
 @pytest.mark.parametrize("shape", [(1, 1024, 4096, 4096), (128, 1, 1024, 4096)], ids=lambda p: ",".join(map(str, p)))
 @pytest.mark.parametrize("timer_cls", [PerformanceTimer, CUDAPerformanceTimer], ids=lambda p: p.__name__)
 @pytest.mark.parametrize("dtype", [torch.bfloat16], ids=str)
-def test_performance_counter_manager(shape, timer_cls, dtype):
+@pytest.mark.parametrize("device_name, bandwidth", [(None, 0), ("A100", 2e12)])
+def test_performance_counter_manager(shape, timer_cls, dtype, device_name, bandwidth):
     
     batch_size, query_len, in_features, out_features = shape
     num_tokens = batch_size * query_len
@@ -348,7 +349,7 @@ def test_performance_counter_manager(shape, timer_cls, dtype):
         _ = torch.matmul(a, b)
     end = time.perf_counter()
     elapsed = end - start 
-    cm.print_summary(labels=["a", "b"], verbose=True)
+    # cm.print_summary(labels=["a", "b"], verbose=True)
     assert "a" in cm.counts
     assert "b" in cm.counts
     counts = cm.counts
@@ -358,7 +359,12 @@ def test_performance_counter_manager(shape, timer_cls, dtype):
     assert cm.total_flops == 2 * expected_flops
     assert cm.total_io == 2 * expected_io
     
-    summary = cm.get_summary()
+    if device_name is not None:
+        with patch_device(device_name):
+            device_spec = CUDADeviceSpec(dtype=dtype, bandwidth=bandwidth)
+    else:
+        device_spec = None
+    summary = cm.get_summary(device_spec=device_spec)
     expected_tokens = 2 * num_tokens
     expected_total_flops = 2 * expected_flops
     expected_total_io = 2 * expected_io
@@ -373,6 +379,7 @@ def test_performance_counter_manager(shape, timer_cls, dtype):
     assert abs(summary['token_throughput'] - expected_token_throughput) < 1e-1
     assert abs(summary['io_throughput'] - expected_io_throughput) < 1e-1
     assert abs(summary['flop_throughput'] - expected_flops_throughput) < 1e-1
+
 # -------------------- Performance Counter Tests ------------------- #
 
 def get_leaf_nodes(count_keys, module_name):
