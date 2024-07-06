@@ -396,9 +396,10 @@ def test_performance_counter():
     model_config = model.config
     batch_size, seqlen = (1, 128)
     input_ids = torch.randint(0, model_config.vocab_size, (batch_size, seqlen), device="cuda")
-    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.FLASH_ATTENTION):
-        with PerformanceCounterMode(debug=True) as perf_counter:
-            _ = model(input_ids)
+    with torch.no_grad():
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
+            with PerformanceCounterMode(debug=True) as perf_counter:
+                _ = model(input_ids)
     summary_flops = perf_counter.get_summary_flop_counts()
     summary_data = perf_counter.get_summary_data_counts()
     flops_by_op = perf_counter.get_flop_counts()
@@ -421,7 +422,22 @@ def test_performance_counter():
     # Attention
     attention_keys = get_leaf_nodes(summary_flops.keys(), "self_attn")
     for k in attention_keys:
-        ops = flops_by_op[k]
-        for op, count in ops.items():
+        flops = flops_by_op[k]
+        data_movement = data_by_op[k]
+        for op, count in flops.items():
             if "attention" in op.__name__: 
                 print(f"{op}: {count}")
+                flop_check = 2 * 2 * batch_size * seqlen * seqlen * model_config.hidden_size
+                print(f"{flop_check} {count} {flop_check - count}")
+        for op, count in data_movement.items():
+            if "attention" in op.__name__:
+                # queries, keys, values
+                input_size = (batch_size * seqlen * model_config.hidden_size * 3) * element_size
+                output_size = (batch_size * seqlen * model_config.hidden_size) * element_size
+                attn_size = input_size + output_size 
+                # Check approx equal due to other small artifacts returned by sdpa.mem_efficient_attention
+                # See #https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/transformers/cuda/attention.cu#L867
+                print(f"{input_size} {output_size} = {attn_size} vs {count} -> {attn_size - count}")
+                #Check within 100 bytes
+                assert abs(attn_size - count) < 100
+                

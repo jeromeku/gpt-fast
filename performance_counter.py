@@ -64,6 +64,8 @@ class PerformanceCounterMode(FlopCounterMode):
         arg_sizes = self._get_data_sizes(args)
         kwargs_sizes = self._get_data_sizes(kwargs.values())
         out_sizes = self._get_data_sizes(out)
+        if "attention" in func_packet.__name__:
+            print(f"attention out sizes: {len(out)} {out_sizes}")
         arg_size, kwargs_size, out_size = sum(arg_sizes), sum(kwargs_sizes), sum(out_sizes)
         return arg_size, kwargs_size, out_size
     
