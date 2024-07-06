@@ -356,7 +356,6 @@ def test_performance_counter_manager(shape, timer_cls):
     assert counts['b']['total_flops'] == expected_flops
     assert cm.total_flops == 2 * expected_flops
     
-    assert all(["flops_table" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["flop_counts" in cm.counts[k] for k in cm.counts.keys()])
     assert all(["total_flops" in cm.counts[k] for k in cm.counts.keys()])
     

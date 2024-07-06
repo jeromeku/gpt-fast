@@ -427,6 +427,10 @@ class PerformanceTimer:
     def flop_counts(self):
         return self.perf_counter.get_flop_counts()
     
+    @property
+    def io_counts(self):
+        return self.perf_counter.get_io_counts()
+    
 class CUDAPerformanceTimer(PerformanceTimer):
         
     def __enter__(self):

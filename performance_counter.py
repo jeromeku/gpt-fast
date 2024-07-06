@@ -17,6 +17,9 @@ class PerformanceCounterMode(FlopCounterMode):
     def get_io_counts(self):
         return {k: dict(v) for k,v in self.io_counts.items()}
     
+    def get_total_io(self):
+        return sum(self.io_counts['Global'].values())
+
     def _get_io_sizes(self, args):
         sizes = tree_map(lambda x: x.numel() * x.element_size() if isinstance(x, torch.Tensor) else 0, args)
         if not hasattr(sizes, "__len__"):
