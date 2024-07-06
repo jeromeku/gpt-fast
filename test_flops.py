@@ -312,20 +312,17 @@ class TestSpeedOfLight(unittest.TestCase):
             MFU_test = sol.model_flops_utilization(token_throughput=token_throughput, context_len=seq_len)
             self.assertEqual(MFU_ref, MFU_test)
    
-    @parameterized.expand([("A100", 1.555e12, 40e9, 1, 128, torch.float16), ])
-    def test_model_flops_utilization(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
-        model = self.model
-        # MFU = token_throughput * model_flops / device_bandwidth
-
 # -------------------- Flop Counter Tests ------------------- #
 @pytest.mark.parametrize("shape", [(1, 1024, 4096, 4096), (128, 1, 1024, 4096)], ids=lambda p: ",".join(map(str, p)))
 @pytest.mark.parametrize("timer_cls", [PerformanceTimer, CUDAPerformanceTimer], ids=lambda p: p.__name__)
-def test_performance_counter_manager(shape, timer_cls):
+@pytest.mark.parametrize("dtype", [torch.bfloat16], ids=str)
+def test_performance_counter_manager(shape, timer_cls, dtype):
     
     batch_size, query_len, in_features, out_features = shape
     num_tokens = batch_size * query_len
-    a = torch.randn(num_tokens, in_features, dtype=torch.bfloat16, device="cuda")
-    b = torch.randn(in_features, out_features, dtype=torch.bfloat16, device="cuda")
+    element_size = dtype.itemsize
+    a = torch.randn(num_tokens, in_features, dtype=dtype, device="cuda")
+    b = torch.randn(in_features, out_features, dtype=dtype, device="cuda")
     
     cm = PerformanceCounterManager(timer_cls=timer_cls)
     start = time.perf_counter()
@@ -335,13 +332,16 @@ def test_performance_counter_manager(shape, timer_cls):
     
     elapsed = (end - start)
     expected_flops = 2 * num_tokens * in_features * out_features
-    
+    expected_io = (num_tokens * in_features + in_features * out_features + num_tokens * out_features) * element_size 
     assert cm.total_flops == expected_flops
     counts = cm.get_counts()
     assert "a" in counts
     assert abs(counts['a']['elapsed'] - elapsed) < 1e-1 # +/- 100ms
     assert counts['a']['total_flops'] == expected_flops
-    assert counts['a']['throughput'] == counts['a']['num_tokens'] / counts['a']['elapsed']
+    assert counts['a']['total_io'] == expected_io
+    assert counts['a']['token_throughput'] == counts['a']['num_tokens'] / counts['a']['elapsed']
+    assert counts['a']['flops_throughput'] == counts['a']['total_flops'] / counts['a']['elapsed']
+    assert counts['a']['io_throughput'] == counts['a']['total_io'] / counts['a']['elapsed']
     
     start = time.perf_counter()
     with cm.count("b", num_tokens=num_tokens):
@@ -354,10 +354,9 @@ def test_performance_counter_manager(shape, timer_cls):
     counts = cm.counts
     assert abs(counts['b']['elapsed'] - elapsed) < 1e-1 # +/- 100ms
     assert counts['b']['total_flops'] == expected_flops
+    assert counts['b']['total_io'] == expected_io
     assert cm.total_flops == 2 * expected_flops
-    
-    assert all(["flop_counts" in cm.counts[k] for k in cm.counts.keys()])
-    assert all(["total_flops" in cm.counts[k] for k in cm.counts.keys()])
+    assert cm.total_io == 2 * expected_io
     
     summary = cm.get_summary()
     expected_tokens = 2 * num_tokens

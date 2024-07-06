@@ -492,9 +492,11 @@ class PerformanceCounterManager:
             self._counts[label] = {"label": label,
                                   "num_tokens": num_tokens,
                                   "elapsed": perf_timer.elapsed,
-                                  "throughput": num_tokens / perf_timer.elapsed,
+                                  "token_throughput": num_tokens / perf_timer.elapsed,
                                   "total_flops": perf_timer.total_flops, 
+                                  "flops_throughput": perf_timer.total_flops / perf_timer.elapsed,
                                   "total_io": perf_timer.total_io,
+                                  "io_throughput": perf_timer.total_io / perf_timer.elapsed,
                                   "summary_flops": perf_timer.get_summary_flop_counts(),
                                   "summary_io": perf_timer.get_summary_io_counts(),
                                   "flop_counts": perf_timer.flop_counts,
@@ -550,7 +552,7 @@ class PerformanceCounterManager:
     
     def _format_single(self, label, counts, precision, verbose=False):
         ms = round(counts['elapsed'] * 1e3, precision)
-        token_throughput = round(counts['throughput'], precision)
+        token_throughput = round(counts['token_throughput'], precision)
         gflops = round(counts['total_flops'] / 1e9, precision)
         gb = round(counts['total_io'] / 1e9, precision)
         flop_throughput = round(gflops / counts['elapsed'], precision)
