@@ -361,15 +361,18 @@ def test_performance_counter_manager(shape, timer_cls, dtype):
     summary = cm.get_summary()
     expected_tokens = 2 * num_tokens
     expected_total_flops = 2 * expected_flops
+    expected_total_io = 2 * expected_io
     expected_total_time = cm.total_time
     expected_token_throughput = expected_tokens / expected_total_time
+    expected_io_throughput = expected_total_io / expected_total_time
     expected_flops_throughput = expected_total_flops / expected_total_time
     assert summary['total_tokens'] == expected_tokens
+    assert summary['total_io'] == expected_total_io
     assert summary['total_flops'] == expected_total_flops
     assert summary['total_time'] == expected_total_time
     assert abs(summary['token_throughput'] - expected_token_throughput) < 1e-1
+    assert abs(summary['io_throughput'] - expected_io_throughput) < 1e-1
     assert abs(summary['flop_throughput'] - expected_flops_throughput) < 1e-1
-    cm.print_summary()
 # -------------------- Performance Counter Tests ------------------- #
 
 def get_leaf_nodes(count_keys, module_name):
