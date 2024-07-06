@@ -30,10 +30,12 @@ from profiling_utils import (
     total_model_params,
 )
 
+# -------------------- Device Spec Tests ------------------- #
 DEVICE_NAMES = ["h100 sxm", "a100", "nvidia geforce rtx 4090"]
 DTYPES = [torch.float32, torch.bfloat16, torch.float16]
 USE_TENSORCORES = [True, False]
 DEVICE_CONFIGS = itertools.product(DEVICE_NAMES, DTYPES, USE_TENSORCORES)
+
 
 @contextmanager
 def patch_device(device_name):
@@ -58,6 +60,7 @@ def test_device_spec(device_name, dtype, use_tensorcores):
         # Prevent setting attributes not in named fields to guard against user error
         with pytest.raises(AttributeError):
             device_spec.FLOPs = None
+
 def test_empty_device_spec():
     device_name = "fake device"
     with patch_device(device_name):
@@ -80,6 +83,8 @@ def test_empty_device_spec():
         with pytest.raises(AssertionError):
             device_spec = CUDADeviceSpec()
         
+        
+# -------------------- Transformer Config Tests ------------------- #
 MODEL_CONFIG_KEYS = ["name", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "hidden_size", "intermediate_size", "vocab_size", "dtype"]
 MODEL_CONFIGS = [("llama-7b", 32, 32, 32, 4096, 11008, 32000, torch.float16), ]
 
@@ -164,6 +169,7 @@ class TestTransformerConfig(unittest.TestCase):
         #Round to nearest GFlops with 3 significant digits
         assert convert_to_nearest_power(flops, base=1e9, num_decimals=2) == convert_to_nearest_power(flops_ref, base=1e9, num_decimals=2)
 
+# -------------------- Speed of Light Tests ------------------- #
 @parameterized_class([dict(zip(MODEL_CONFIG_KEYS, config)) for config in MODEL_CONFIGS])
 class TestSpeedOfLight(unittest.TestCase):
     
@@ -310,7 +316,8 @@ class TestSpeedOfLight(unittest.TestCase):
     def test_model_flops_utilization(self, device_name, bandwidth, vram, batch_size, seq_len, dtype):
         model = self.model
         # MFU = token_throughput * model_flops / device_bandwidth
-            
+
+# -------------------- Flop Counter Tests ------------------- #
 @pytest.mark.parametrize("shape", [(1, 1024, 4096, 4096), (128, 1, 1024, 4096)], ids=lambda p: ",".join(map(str, p)))
 @pytest.mark.parametrize("timer_cls", [FlopsTimer, CudaFlopsTimer], ids=lambda p: p.__name__)
 def test_flop_counter_manager(shape, timer_cls):
@@ -365,36 +372,30 @@ def test_flop_counter_manager(shape, timer_cls):
     assert abs(summary['token_throughput'] - expected_token_throughput) < 1e-1
     assert abs(summary['flop_throughput'] - expected_flops_throughput) < 1e-1
 
+# -------------------- Performance Counter Tests ------------------- #
+
 def get_leaf_nodes(count_keys, module_name):
     return [k for k in count_keys if k.endswith(module_name)]
 
+SMALL_MODEL_CONFIG = (1, 128, 352, 4, 32000)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-def test_performance_counter():
-    from transformers import AutoModelForCausalLM, LlamaConfig
-    small_config = {
-    "architectures": [
-        "LLaMAForCausalLM"
-    ],
-    "bos_token_id": 0,
-    "eos_token_id": 1,
-    "pad_token_id": 1,
-    "hidden_size": 128,
-    "intermediate_size": 352,
-    "max_sequence_length": 1024,
-    "model_type": "llama",
-    "num_attention_heads": 4,
-    "num_hidden_layers": 1,
-    "vocab_size": 32000,
-    }
-    dtype = torch.float16
-    cfg = LlamaConfig(**small_config)
+@pytest.mark.parametrize("num_hidden_layers, hidden_size, intermediate_size, num_attention_heads, vocab_size", [SMALL_MODEL_CONFIG])
+@pytest.mark.parametrize("batch_size, seqlen", [(1, 128),])
+@pytest.mark.parametrize("dtype", [torch.float16], ids=lambda p: str(p))
+def test_performance_counter(num_hidden_layers, hidden_size, intermediate_size, num_attention_heads, vocab_size, batch_size, seqlen, dtype):
+
+    cfg = LlamaConfig(num_hidden_layers=num_hidden_layers, 
+                      hidden_size=hidden_size,
+                      intermediate_size=intermediate_size, 
+                      num_attention_heads=num_attention_heads, 
+                      vocab_size=vocab_size)
+
     # Note we set some options manually since the model doesn't seem to be initialized correctly
     # when these options are set in LlamaConfig
     cfg._attn_implementation = "sdpa"
     model = LlamaForCausalLM(cfg).to(dtype).to("cuda")
     model_config = model.config
     
-    batch_size, seqlen = (1, 128)
     input_ids = torch.randint(0, model_config.vocab_size, (batch_size, seqlen), device="cuda")
     with torch.no_grad():
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION):
