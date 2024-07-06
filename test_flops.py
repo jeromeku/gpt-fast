@@ -387,13 +387,13 @@ def test_performance_counter():
     "vocab_size": 32000,
     }
     dtype = torch.float16
-    model_config = LlamaConfig(**small_config)
-    model_config._attn_implementation = "sdpa"
-    model = LlamaForCausalLM(model_config).to(dtype).to("cuda")
-    # model_id = "/home/ubuntu/gpt-fast-dev/checkpoints/7B"
-    # model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", torch_dtype=dtype, low_cpu_mem_usage=True)
-    print(next(model.parameters()).dtype)
+    cfg = LlamaConfig(**small_config)
+    # Note we set some options manually since the model doesn't seem to be initialized correctly
+    # when these options are set in LlamaConfig
+    cfg._attn_implementation = "sdpa"
+    model = LlamaForCausalLM(cfg).to(dtype).to("cuda")
     model_config = model.config
+    
     batch_size, seqlen = (1, 128)
     input_ids = torch.randint(0, model_config.vocab_size, (batch_size, seqlen), device="cuda")
     with torch.no_grad():
@@ -416,7 +416,6 @@ def test_performance_counter():
         assert expected_flops == summary_flops[proj_keys[0]]
         
         # Data movement check
-        # data movement = inputs + weights + outputs
         element_size = dtype.itemsize
         input_size = batch_size * seqlen * model_config.hidden_size * element_size 
         weight_size = model_config.hidden_size * model_config.hidden_size * element_size 
@@ -452,7 +451,6 @@ def test_performance_counter():
         assert expected_flops == summary_flops[proj_keys[0]]
         
         # Data movement check
-        # data movement = inputs + weights + outputs
         element_size = dtype.itemsize
         input_size = (batch_size * seqlen * model_config.hidden_size * element_size if (k == "up_proj" or k == "gate_proj") 
                       else batch_size * seqlen * model_config.intermediate_size * element_size)
