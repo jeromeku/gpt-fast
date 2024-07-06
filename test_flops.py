@@ -407,17 +407,22 @@ def test_performance_counter():
     assert len(summary_flops) == len(summary_data)
     assert summary_flops.keys() == summary_data.keys()
 
-    q_proj_keys = get_leaf_nodes(summary_flops.keys(), "q_proj")
-    assert len(q_proj_keys) == model.config.num_hidden_layers
-    expected_flops = 2 * batch_size * seqlen * model_config.hidden_size * model_config.hidden_size
-    assert expected_flops == summary_flops[q_proj_keys[0]]
-    # Data movement = inputs + weights + outputs
-    element_size = dtype.itemsize
-    input_size = batch_size * seqlen * model_config.hidden_size * element_size 
-    weight_size = model_config.hidden_size * model_config.hidden_size * element_size 
-    output_size = batch_size * seqlen * model_config.hidden_size * element_size
-    expected_size = input_size + weight_size + output_size
-    assert expected_size == summary_data[q_proj_keys[0]]
+    # Attention projections
+    for k in ["q_proj", "k_proj", "v_proj"]:
+        # Flops check
+        proj_keys = get_leaf_nodes(summary_flops.keys(), k)
+        assert len(proj_keys) == model.config.num_hidden_layers
+        expected_flops = 2 * batch_size * seqlen * model_config.hidden_size * model_config.hidden_size
+        assert expected_flops == summary_flops[proj_keys[0]]
+        
+        # Data movement check
+        # data movement = inputs + weights + outputs
+        element_size = dtype.itemsize
+        input_size = batch_size * seqlen * model_config.hidden_size * element_size 
+        weight_size = model_config.hidden_size * model_config.hidden_size * element_size 
+        output_size = batch_size * seqlen * model_config.hidden_size * element_size
+        expected_size = input_size + weight_size + output_size
+        assert expected_size == summary_data[proj_keys[0]]
 
     # Attention
     attention_keys = get_leaf_nodes(summary_flops.keys(), "self_attn")
@@ -426,9 +431,8 @@ def test_performance_counter():
         data_movement = data_by_op[k]
         for op, count in flops.items():
             if "attention" in op.__name__: 
-                print(f"{op}: {count}")
-                flop_check = 2 * 2 * batch_size * seqlen * seqlen * model_config.hidden_size
-                print(f"{flop_check} {count} {flop_check - count}")
+                expected_flops = 2 * 2 * batch_size * seqlen * seqlen * model_config.hidden_size
+                assert expected_flops == count
         for op, count in data_movement.items():
             if "attention" in op.__name__:
                 # queries, keys, values
@@ -437,7 +441,7 @@ def test_performance_counter():
                 attn_size = input_size + output_size 
                 # Check approx equal due to other small artifacts returned by sdpa.mem_efficient_attention
                 # See #https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/native/transformers/cuda/attention.cu#L867
-                print(f"{input_size} {output_size} = {attn_size} vs {count} -> {attn_size - count}")
+                # print(f"{input_size} {output_size} = {attn_size} vs {count} -> {attn_size - count}")
                 #Check within 100 bytes
                 assert abs(attn_size - count) < 100
                 
